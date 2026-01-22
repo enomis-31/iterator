@@ -10,3 +10,8 @@ task_presets:
     prompt: "Remove unused imports and sort them according to PEP8."
   add-docstrings:
     prompt: "Add docstrings to all public functions that are missing them."
+
+models:
+  coder: "ollama/qwen2.5-coder:14b"
+  planner: "ollama/llama3.1:8b"
+
