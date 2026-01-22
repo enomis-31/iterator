@@ -7,20 +7,16 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# LLM Configurations
-# Assuming Ollama is running on localhost
-coder_llm = LLM(
-    model="ollama/qwen2.5-coder:14b",
-    base_url="http://localhost:11434"
-)
+# Defaults
+DEFAULT_CODER_MODEL = "ollama/qwen2.5-coder:14b"
+DEFAULT_PLANNER_MODEL = "ollama/llama3.1:8b"
+BASE_URL = "http://localhost:11434"
 
-critic_llm = LLM(
-    model="ollama/llama3.1:8b",
-    base_url="http://localhost:11434"
-)
+def get_llm(model_name: str) -> LLM:
+    return LLM(model=model_name, base_url=BASE_URL)
 
 # Agents
-def create_coder_agent() -> Agent:
+def create_coder_agent(model_name: str) -> Agent:
     return Agent(
         role="Senior Developer",
         goal="Plan and implement code refactors with precision.",
@@ -28,12 +24,12 @@ def create_coder_agent() -> Agent:
             "You are an expert software engineer specializing in refactoring. "
             "You analyze requests and repositories to produce clear, actionable plans for coding tools (like Aider)."
         ),
-        llm=coder_llm,
+        llm=get_llm(model_name),
         verbose=True,
         allow_delegation=False
     )
 
-def create_critic_agent() -> Agent:
+def create_critic_agent(model_name: str) -> Agent:
     return Agent(
         role="Code Reviewer",
         goal="Verify code changes and test results to ensure quality and correctness.",
@@ -41,18 +37,18 @@ def create_critic_agent() -> Agent:
             "You are a strict code reviewer. You look at git diffs and test logs. "
             "You rely on evidence, not intuition. You only approve changes that are correct and safe."
         ),
-        llm=critic_llm,
+        llm=get_llm(model_name),
         verbose=True,
         allow_delegation=False
     )
 
 # Service Functions
 
-def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_context: str = "") -> Tuple[str, List[str]]:
+def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_context: str = "", model_name: str = DEFAULT_CODER_MODEL) -> Tuple[str, List[str]]:
     """
     Generates a prompt for Aider and a list of files to edit.
     """
-    coder = create_coder_agent()
+    coder = create_coder_agent(model_name)
     
     files_list_str = "\n".join(repo_files[:200]) # Limit to avoid context overflow if huge
     if len(repo_files) > 200:
@@ -100,11 +96,11 @@ def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_co
         # Fallback
         return task_name, []
 
-def critic_review(diff: str, test_log: str, task_name: str) -> str:
+def critic_review(diff: str, test_log: str, task_name: str, model_name: str = DEFAULT_PLANNER_MODEL) -> str:
     """
     Reviews the changes and returns "SHIP" or "REVISE".
     """
-    critic = create_critic_agent()
+    critic = create_critic_agent(model_name)
     
     review_task = Task(
         description=(

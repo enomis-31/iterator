@@ -14,6 +14,7 @@ class Config:
     branch_prefix: str = "ai"
     task_presets: Dict[str, Dict[str, str]] = field(default_factory=dict)
     spec_kit: Dict[str, any] = field(default_factory=lambda: {"enabled": False})
+    models: Dict[str, str] = field(default_factory=lambda: {"coder": "ollama/qwen2.5-coder:14b", "planner": "ollama/llama3.1:8b"})
 
 def detect_language(repo_root: Path) -> str:
     # Simple heuristic
@@ -46,16 +47,17 @@ def load_config(repo_root: Path) -> Config:
         "include": ["src", "app", "lib"],
         "exclude": ["node_modules", "dist", ".ralph", ".agents", "__pycache__", ".git", ".venv", "venv"],
         "task_presets": {},
-        "spec_kit": {"enabled": False}
+        "spec_kit": {"enabled": False},
+        "models": {
+            "coder": "ollama/qwen2.5-coder:14b",
+            "planner": "ollama/llama3.1:8b"
+        }
     }
     defaults["tests"] = detect_test_command(repo_root, defaults["language"])
 
     if config_path.exists():
         with open(config_path, "r") as f:
             user_config = yaml.safe_load(f) or {}
-            # Merge logic: user_config overrides defaults
-            # For lists, we replace; for dicts, we could merge but for simplicity replacements is fine for now
-            # except task_presets maybe?
             
             language = user_config.get("language", defaults["language"])
             tests = user_config.get("tests", defaults["tests"])
@@ -65,6 +67,11 @@ def load_config(repo_root: Path) -> Config:
             task_presets = user_config.get("task_presets", defaults["task_presets"])
             spec_kit = user_config.get("spec_kit", defaults["spec_kit"])
             
+            # Merge models dict carefully so user can override just one
+            user_models = user_config.get("models", {})
+            models = defaults["models"].copy()
+            models.update(user_models)
+            
             return Config(
                 repo_root=repo_root,
                 language=language,
@@ -73,7 +80,8 @@ def load_config(repo_root: Path) -> Config:
                 exclude=exclude,
                 branch_prefix=branch_prefix,
                 task_presets=task_presets,
-                spec_kit=spec_kit
+                spec_kit=spec_kit,
+                models=models
             )
             
     return Config(
@@ -84,5 +92,6 @@ def load_config(repo_root: Path) -> Config:
         exclude=defaults["exclude"],
         branch_prefix=defaults["branch_prefix"],
         task_presets=defaults["task_presets"],
-        spec_kit=defaults["spec_kit"]
+        spec_kit=defaults["spec_kit"],
+        models=defaults["models"]
     )

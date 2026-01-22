@@ -71,16 +71,8 @@ def run_once(
         if not aider_prompt:
             # Generate plan
             print("Generating plan with Coder Agent...")
-            aider_prompt, target_files = coder_plan(task_name, "User requested refactor.", all_files, spec_context)
-    
-    # If using prompt provided by caller (e.g. Ralph/User), we might still want to append context?
-    # Usually Aider needs the context in the message, OR we pass it as a file/read-only context.
-    # For now, if prompt is provided, we assume it's self-contained or the user knows what they're doing.
-    # BUT, if we have spec_context and a prompt, we might want to prepend spec context to the prompt sent to Aider?
-    # No, usually Aider is just the coder. CrewAI (the Planner) consumes the specs.
-    # If we skip agents (use_agents=False or prompt provided), then Spec Kit might be ignored unless we manually prepend it.
-    # Let's decide: if prompt is passed, we just run it. If user wants spec context in Aider directly, they should probably rely on agents or include it.
-    # However, if 'prompt' came from Ralph, Ralph might have already included context.
+            coder_model = config.models.get("coder", "ollama/qwen2.5-coder:14b")
+            aider_prompt, target_files = coder_plan(task_name, "User requested refactor.", all_files, spec_context, coder_model)
     
     if not aider_prompt:
         aider_prompt = task_name # Fallback if agent failed or no prompt provided
@@ -102,7 +94,8 @@ def run_once(
     decision = "SHIP"
     if use_agents:
         print("Reviewing changes with Critic Agent...")
-        decision = critic_review(diff, test_log, task_name)
+        planner_model = config.models.get("planner", "ollama/llama3.1:8b")
+        decision = critic_review(diff, test_log, task_name, planner_model)
     
     # 5. Commit/Push
     if decision == "SHIP" and tests_ok:
