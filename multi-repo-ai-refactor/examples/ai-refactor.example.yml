@@ -1,0 +1,12 @@
+language: python
+tests: "pytest"
+include:
+  - ai_refactor
+exclude:
+  - tests/fixtures
+branch_prefix: refactor
+task_presets:
+  cleanup-imports:
+    prompt: "Remove unused imports and sort them according to PEP8."
+  add-docstrings:
+    prompt: "Add docstrings to all public functions that are missing them."

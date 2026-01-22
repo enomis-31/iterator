@@ -1,0 +1,19 @@
+[project]
+name = "ai-refactor"
+version = "0.1.0"
+description = "A global, repo-agnostic AI refactoring CLI tool using Ollama, Aider, and CrewAI."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "crewai",
+    "litellm",
+    "pyyaml",
+]
+
+[project.scripts]
+ai-refactor = "ai_refactor.cli:main"
+ai-refactor-agent = "ai_refactor.ralph_adapter:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

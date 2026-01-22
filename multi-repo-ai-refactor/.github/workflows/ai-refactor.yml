@@ -1,0 +1,27 @@
+name: AI Refactor
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Refactoring task name"
+        required: true
+
+jobs:
+  refactor:
+    runs-on: self-hosted # Needs Ollama
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ai-refactor
+        run: pip install git+https://github.com/your/repo.git
+      - name: Run Refactor
+        run: ai-refactor "${{ github.event.inputs.task }}" --no-branch --auto-commit
+      - name: Create PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create --title "AI Refactor: ${{ github.event.inputs.task }}" --body "Automated refactor"
