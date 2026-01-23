@@ -13,17 +13,38 @@ def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, c
         prompt: The prompt to send to Aider
         repo_root: Root directory of the repository
         files: Optional list of files to include
-        config_path: Optional path to Aider config file
+        config_path: Optional path to Aider config file (if not provided, looks for ~/.aider.conf.yml)
         model: Optional model name (e.g., "ollama/qwen2.5-coder:14b")
         ollama_base_url: Optional Ollama base URL (e.g., "http://192.168.1.4:11434")
+    
+    Note:
+        Aider configuration priority:
+        1. config_path parameter (if provided)
+        2. ~/.aider.conf.yml (user config, if exists)
+        3. Environment variables (OLLAMA_API_BASE, OPENAI_API_BASE, etc.)
+        4. Command-line flags (--model, etc.)
     """
-    cmd = ["aider", "--no-auto-commits", "--message", prompt]
+    # Build command with non-interactive flags
+    cmd = ["aider", "--no-auto-commits", "--no-show-model-warnings", "--message", prompt]
+    
+    # Look for Aider config file if not explicitly provided
+    if not config_path:
+        # Check for user config file
+        user_config = Path.home() / ".aider.conf.yml"
+        if user_config.exists():
+            config_path = user_config
     
     if config_path and config_path.exists():
         cmd.extend(["--config", str(config_path)])
+        print(f"Using Aider config: {config_path}")
     
     # Configure Aider to use Ollama if model and base_url are provided
     env = os.environ.copy()
+    
+    # Disable interactive prompts
+    env["AIDER_NO_ANALYTICS"] = "1"
+    env["AIDER_SKIP_GITIGNORE"] = "1"
+    
     if model:
         if ollama_base_url:
             # Aider needs OLLAMA_API_BASE for Ollama models
@@ -32,6 +53,7 @@ def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, c
             api_base = f"{ollama_base_url}/v1"
             env["OPENAI_API_BASE"] = api_base
             env["OPENAI_API_KEY"] = "ollama"  # Ollama doesn't require a real key
+            print(f"Configured Ollama endpoint: {ollama_base_url}")
         # Set model via command line (Aider supports --model flag)
         if model.startswith("ollama/"):
             # Remove "ollama/" prefix for --model flag
@@ -39,21 +61,26 @@ def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, c
             cmd.extend(["--model", model_name])
         else:
             cmd.extend(["--model", model])
+        print(f"Using model: {model}")
     
     if files:
         # Resolve files relative to repo_root
         cmd.extend(files)
         
     print(f"Running Aider with command: {' '.join(shlex.quote(c) for c in cmd)}")
-    if model:
-        print(f"Using model: {model}")
-    if ollama_base_url:
-        print(f"Using Ollama endpoint: {ollama_base_url}")
     
     try:
-        # We allow Aider to take over stdin/stdout potentially, but usually in this automation 
-        # it just runs the prompt and exits.
-        return subprocess.call(cmd, cwd=str(repo_root), env=env)
+        # Run Aider non-interactively with automatic responses to prompts
+        # Responses: n (no analytics), n (no gitignore), d (don't ask again for warnings)
+        result = subprocess.run(
+            cmd,
+            cwd=str(repo_root),
+            env=env,
+            input="n\nn\nd\n",  # Automatic responses: no analytics, no gitignore, don't ask warnings
+            text=True,
+            capture_output=False  # Keep output visible to user
+        )
+        return result.returncode
     except FileNotFoundError:
         print("Error: 'aider' command not found. Please install it via 'pipx install aider-chat'.")
         return 127

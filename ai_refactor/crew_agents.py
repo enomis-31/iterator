@@ -1,8 +1,23 @@
+import os
+import warnings
+import logging
+
+# Disabilita logging avanzato LiteLLM che richiede fastapi
+# Deve essere fatto PRIMA di importare crewai
+os.environ.setdefault("LITELLM_LOG", "ERROR")
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "")
+
+# Filtra warning fastapi
+warnings.filterwarnings("ignore", message=".*fastapi.*")
+warnings.filterwarnings("ignore", message=".*Missing dependency.*fastapi.*")
+
+# Configura logging per sopprimere errori fastapi di LiteLLM
+logging.getLogger("litellm").setLevel(logging.ERROR)
+logging.getLogger("litellm.proxy").setLevel(logging.ERROR)
+
 from crewai import Agent, Task, Crew, LLM
 from typing import Dict, Tuple, List
 import json
-import logging
-import os
 
 # Configure Logger
 logging.basicConfig(level=logging.INFO)
