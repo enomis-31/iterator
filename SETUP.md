@@ -60,6 +60,8 @@ pipx install git+https://github.com/github/spec-kit.git
 
 ## 2. Installation of `ai-refactor`
 
+> **Note**: `crewai` and `litellm` are Python libraries. They will be automatically installed as dependencies when you install the `ai-refactor` tool. You do not need to install them separately.
+
 1. **Navigate to the project source**:
    ```bash
    cd /path/to/multi-repo-ai-refactor
@@ -151,12 +153,33 @@ ai-refactor "Refactor the authentication module to use verify_token function"
 4. **Review**: Planner/Critic Agent (e.g., Llama 3.1) reviews the diff and test logs.
 5. **Ship**: If approved, commits changes.
 
-### Scenario B: Ralph Loop (Autonomous)
-1. **Define a Task/Story** in Ralph's format (e.g., in `.agents/tasks/prd-001.json` or just use `ralph build`).
-2. **Run the Loop**:
-   ```bash
-   ralph build 1
+### Scenario B: Ralph Loop (Autonomous) - "The 3-Iteration Test"
+
+To test a full autonomous loop (e.g., 3 iterations), follow this exact sequence in your target repo:
+
+1. **Prepare the Task**:
+   Create a file `.agents/tasks/todo.md` (or let Ralph generate one from specs).
+   ```markdown
+   # Task: Cleanup Codebase
+   1. Refactor logic.py to use list comprehensions.
+   2. Remove unused imports in all files.
+   3. Add comments to public functions.
    ```
+
+2. **Trigger the Loop**:
+   Run Ralph to execute 3 autonomous cycles. Ralph will read the task, prompt the agent (`ai-refactor-agent`), and track progress.
+   ```bash
+   ralph build 3
+   ```
+
+3. **Monitor**:
+   - Ralph will create a "story" for each cycle.
+   - It invokes `ai-refactor-agent` which:
+     - Plans using CrewAI (Planner Model)
+     - Edits using Aider (Coder Model)
+     - Tests
+     - Reviews (Planner Model)
+   - If `ai-refactor` returns success, Ralph moves to the next cycle.
 
 ### Scenario C: Spec Kit Driven
 1. Create a spec file `specs/feature-x.md`.
@@ -165,8 +188,56 @@ ai-refactor "Refactor the authentication module to use verify_token function"
    ai-refactor "Implement Feature X according to specs"
    ```
 
-## 5. Troubleshooting
+### Scenario D: Spec-Driven Ralph Loop (The "Holy Grail")
+This combines everything: Spec Kit (Truth) + Ralph (Loop) + AI Refactor (Execution).
+
+1. **Verify Config**: Ensure `spec_kit.enabled: true` is in `.ai-refactor.yml`.
+2. **Prepare Specs**: Ensure your `specs/` directory has the relevant design docs.
+3. **Trigger Ralph**:
+   - Ralph reads the generic task (e.g., "Implement the caching feature").
+   - Ralph calls `ai-refactor-agent`.
+   - **Crucially**, `ai-refactor` automatically loads all files from `specs/` and injects them into the Coder/Planner context.
+   - The agent therefore "knows" the specs without you copying them into the prompt.
+
+   ```bash
+   ralph build 5 # Run 5 autonomous iterations guided by your specs
+   ```
+
+   ralph build 5 # Run 5 autonomous iterations guided by your specs
+   ```
+
+## 5. Monitoring & Observation
+
+Since this process runs autonomously, it's important to know what's happening.
+
+### 5.1. Console Output
+- **Ralph**: Shows the high-level loop progress (Cycle 1/5, Current Prompt).
+- **AI Refactor**: You will see colorful logs from CrewAI agents (Planner/Critic) and standard output from Aider as it edits files.
+
+### 5.2. Log Files
+- **Ralph Logs**: Check `.ralph/` directory for detailed logs of each iteration and the "stories" generated.
+- **Git History**: The ultimate log is your git history. `ai-refactor` creates branches like `ai-refactor/task-name-timestamp`.
+  ```bash
+  git log --graph --oneline --all
+  ```
+- **Aider Transcripts**: Aider saves chat transcripts in `.aider.chat.history.md` (if configured) or inside the git messages if using its default mode.
+
+## 6. Troubleshooting
 - **Ollama Connection Refused**: Check if `ollama serve` is running.
 - **Aider Error**: Ensure `aider` is in your PATH (`pipx ensurepath`).
 - **Tests Failing**: Check `tests` command in `.ai-refactor.yml`.
 - **Model not found**: Run `ollama list` to see installed models and update `.ai-refactor.yml` to match.
+
+## 7. Security & Sandboxing (Important)
+
+**Where does the code run?**
+Currently, `ai-refactor` (and Aider) executes **directly on your local machine** with your user permissions. It is **NOT** sandboxed by default.
+
+**Risk Mitigation**:
+1.  **Git Branching**: The tool automatically creates a new feature branch for every task. It effectively never touches your `main` or `dev` branch directly. If the agent does something destructive, you can simply delete the branch:
+    ```bash
+    git checkout main
+    git branch -D ai-refactor/failed-task
+    ```
+2.  **Code Review**: The "Critic" agent reviews changes, but **YOU** are the final gatekeeper. Always inspect the PR/diff before merging.
+3.  **Recommendation**: For maximum safety, especially when refactoring untrusted codebases, we recommend running this tool inside a **Dev Container** (Docker) or a Virtual Machine.
