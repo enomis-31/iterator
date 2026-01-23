@@ -25,21 +25,20 @@ def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, c
     # Configure Aider to use Ollama if model and base_url are provided
     env = os.environ.copy()
     if model:
-        # Aider uses OPENAI_API_BASE and OPENAI_API_KEY for Ollama
         if ollama_base_url:
-            # Convert to OpenAI-compatible endpoint
+            # Aider needs OLLAMA_API_BASE for Ollama models
+            env["OLLAMA_API_BASE"] = ollama_base_url
+            # Also set OpenAI-compatible endpoint (some Aider versions use this)
             api_base = f"{ollama_base_url}/v1"
             env["OPENAI_API_BASE"] = api_base
             env["OPENAI_API_KEY"] = "ollama"  # Ollama doesn't require a real key
-        # Set model via environment or command line
-        env["AIDER_MODEL"] = model
-        # Also try to pass via command line if Aider supports it
-        # Note: Some versions of Aider may need --model flag
-        try:
-            # Try --model flag (newer versions)
+        # Set model via command line (Aider supports --model flag)
+        if model.startswith("ollama/"):
+            # Remove "ollama/" prefix for --model flag
+            model_name = model.replace("ollama/", "")
+            cmd.extend(["--model", model_name])
+        else:
             cmd.extend(["--model", model])
-        except:
-            pass
     
     if files:
         # Resolve files relative to repo_root
