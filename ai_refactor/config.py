@@ -15,6 +15,7 @@ class Config:
     task_presets: Dict[str, Dict[str, str]] = field(default_factory=dict)
     spec_kit: Dict[str, any] = field(default_factory=lambda: {"enabled": False})
     models: Dict[str, str] = field(default_factory=lambda: {"coder": "ollama/qwen2.5-coder:14b", "planner": "ollama/llama3.1:8b"})
+    ollama_base_url: Optional[str] = None
 
 def detect_language(repo_root: Path) -> str:
     # Simple heuristic
@@ -72,6 +73,9 @@ def load_config(repo_root: Path) -> Config:
             models = defaults["models"].copy()
             models.update(user_models)
             
+            # Get ollama_base_url from config or environment
+            ollama_base_url = user_config.get("ollama_base_url") or os.getenv("OLLAMA_BASE_URL")
+            
             return Config(
                 repo_root=repo_root,
                 language=language,
@@ -81,9 +85,12 @@ def load_config(repo_root: Path) -> Config:
                 branch_prefix=branch_prefix,
                 task_presets=task_presets,
                 spec_kit=spec_kit,
-                models=models
+                models=models,
+                ollama_base_url=ollama_base_url
             )
             
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL")
+    
     return Config(
         repo_root=repo_root,
         language=defaults["language"],
@@ -93,5 +100,6 @@ def load_config(repo_root: Path) -> Config:
         branch_prefix=defaults["branch_prefix"],
         task_presets=defaults["task_presets"],
         spec_kit=defaults["spec_kit"],
-        models=defaults["models"]
+        models=defaults["models"],
+        ollama_base_url=ollama_base_url
     )

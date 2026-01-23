@@ -2,6 +2,7 @@ from crewai import Agent, Task, Crew, LLM
 from typing import Dict, Tuple, List
 import json
 import logging
+import os
 
 # Configure Logger
 logging.basicConfig(level=logging.INFO)
@@ -10,13 +11,16 @@ logger = logging.getLogger(__name__)
 # Defaults
 DEFAULT_CODER_MODEL = "ollama/qwen2.5-coder:14b"
 DEFAULT_PLANNER_MODEL = "ollama/llama3.1:8b"
-BASE_URL = "http://localhost:11434"
+# Read BASE_URL from environment variable or use default
+BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
-def get_llm(model_name: str) -> LLM:
-    return LLM(model=model_name, base_url=BASE_URL)
+def get_llm(model_name: str, base_url: str = None) -> LLM:
+    """Create an LLM instance with optional base_url override."""
+    url = base_url or BASE_URL
+    return LLM(model=model_name, base_url=url)
 
 # Agents
-def create_coder_agent(model_name: str) -> Agent:
+def create_coder_agent(model_name: str, base_url: str = None) -> Agent:
     return Agent(
         role="Senior Developer",
         goal="Plan and implement code refactors with precision.",
@@ -24,12 +28,12 @@ def create_coder_agent(model_name: str) -> Agent:
             "You are an expert software engineer specializing in refactoring. "
             "You analyze requests and repositories to produce clear, actionable plans for coding tools (like Aider)."
         ),
-        llm=get_llm(model_name),
+        llm=get_llm(model_name, base_url=base_url),
         verbose=True,
         allow_delegation=False
     )
 
-def create_critic_agent(model_name: str) -> Agent:
+def create_critic_agent(model_name: str, base_url: str = None) -> Agent:
     return Agent(
         role="Code Reviewer",
         goal="Verify code changes and test results to ensure quality and correctness.",
@@ -37,18 +41,18 @@ def create_critic_agent(model_name: str) -> Agent:
             "You are a strict code reviewer. You look at git diffs and test logs. "
             "You rely on evidence, not intuition. You only approve changes that are correct and safe."
         ),
-        llm=get_llm(model_name),
+        llm=get_llm(model_name, base_url=base_url),
         verbose=True,
         allow_delegation=False
     )
 
 # Service Functions
 
-def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_context: str = "", model_name: str = DEFAULT_CODER_MODEL) -> Tuple[str, List[str]]:
+def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_context: str = "", model_name: str = DEFAULT_CODER_MODEL, base_url: str = None) -> Tuple[str, List[str]]:
     """
     Generates a prompt for Aider and a list of files to edit.
     """
-    coder = create_coder_agent(model_name)
+    coder = create_coder_agent(model_name, base_url=base_url)
     
     files_list_str = "\n".join(repo_files[:200]) # Limit to avoid context overflow if huge
     if len(repo_files) > 200:
@@ -96,11 +100,11 @@ def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_co
         # Fallback
         return task_name, []
 
-def critic_review(diff: str, test_log: str, task_name: str, model_name: str = DEFAULT_PLANNER_MODEL) -> str:
+def critic_review(diff: str, test_log: str, task_name: str, model_name: str = DEFAULT_PLANNER_MODEL, base_url: str = None) -> str:
     """
     Reviews the changes and returns "SHIP" or "REVISE".
     """
-    critic = create_critic_agent(model_name)
+    critic = create_critic_agent(model_name, base_url=base_url)
     
     review_task = Task(
         description=(

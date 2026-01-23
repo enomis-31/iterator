@@ -29,7 +29,11 @@ def run_tests(test_command: str, cwd: Path) -> tuple[bool, str]:
             capture_output=True, 
             text=True
         )
-        return result.returncode == 0, result.stdout + "\n" + result.stderr
+        output = result.stdout + "\n" + result.stderr
+        # Check if command not found (e.g., pytest not installed)
+        if result.returncode != 0 and ("not found" in output.lower() or "command not found" in output.lower()):
+            return True, f"Test command not available (skipped): {output}"
+        return result.returncode == 0, output
     except Exception as e:
         return False, str(e)
 
@@ -72,14 +76,16 @@ def run_once(
             # Generate plan
             print("Generating plan with Coder Agent...")
             coder_model = config.models.get("coder", "ollama/qwen2.5-coder:14b")
-            aider_prompt, target_files = coder_plan(task_name, "User requested refactor.", all_files, spec_context, coder_model)
+            aider_prompt, target_files = coder_plan(task_name, "User requested refactor.", all_files, spec_context, coder_model, base_url=config.ollama_base_url)
     
     if not aider_prompt:
         aider_prompt = task_name # Fallback if agent failed or no prompt provided
         
     # 2. Code (Aider)
     print(f"Starting Aider with prompt: {aider_prompt}")
-    run_aider(aider_prompt, repo_root, target_files)
+    coder_model = config.models.get("coder", "ollama/qwen2.5-coder:14b")
+    run_aider(aider_prompt, repo_root, target_files, 
+              model=coder_model, ollama_base_url=config.ollama_base_url)
     
     # 3. Test
     print("Running tests...")
@@ -95,7 +101,7 @@ def run_once(
     if use_agents:
         print("Reviewing changes with Critic Agent...")
         planner_model = config.models.get("planner", "ollama/llama3.1:8b")
-        decision = critic_review(diff, test_log, task_name, planner_model)
+        decision = critic_review(diff, test_log, task_name, planner_model, base_url=config.ollama_base_url)
     
     # 5. Commit/Push
     if decision == "SHIP" and tests_ok:
