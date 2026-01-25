@@ -253,8 +253,8 @@ def run_once(
         aider_prompt = task_name # Fallback if agent failed or no prompt provided
     
     # 2. Code (Aider)
-    # Nota: Aider può creare nuovi file anche se target_files è vuoto o contiene file non esistenti
-    # Il prompt dovrebbe contenere istruzioni su quali file creare
+    # IMPORTANTE: Aider può creare nuovi file automaticamente quando il prompt lo richiede.
+    # Non blocchiamo se target_files è vuoto - Aider creerà i file necessari basandosi sul prompt.
     log_phase("CODE", verbose)
     logger.info(f"Starting Aider with prompt: {aider_prompt[:100]}..." if len(aider_prompt) > 100 else f"Starting Aider with prompt: {aider_prompt}")
     if target_files:

@@ -93,16 +93,17 @@ def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_co
         
     description += (
         f"Available Files:\n{files_list_str}\n\n"
-        "IMPORTANT: If this is the first implementation, the code files may not exist yet. "
-        "You should suggest creating new files in appropriate directories (e.g., app/, lib/, src/, components/). "
-        "Analyze the repository structure and suggest where to create new files based on the specifications.\n\n"
+        "CRITICAL: This is an autonomous agent working on a repository. "
+        "If code files don't exist yet (first story), you MUST instruct Aider to CREATE them. "
+        "Aider will automatically create files when instructed - you don't 'suggest', you COMMAND creation.\n\n"
         "Produce a JSON object with two keys:\n"
-        "1. 'aider_prompt': A detailed instruction for the coding tool to execute the implementation. "
-        "If files don't exist, instruct to CREATE them in the appropriate directory structure. "
+        "1. 'aider_prompt': A detailed instruction for Aider to CREATE and implement the code. "
+        "Be EXPLICIT: 'CREATE app/components/Notification.tsx with...', 'CREATE lib/services/event-monitor.ts that...'. "
+        "Include full file paths and directory structure. Aider will create directories and files automatically. "
         "Reference specific constraints from the Specifications if applicable.\n"
-        "2. 'target_files': A list of file paths that need to be created or modified. "
-        "You can suggest NEW files that don't exist yet (e.g., 'app/components/Notification.tsx', 'lib/services/event-monitor.ts'). "
-        "Only suggest code files (not spec files).\n"
+        "2. 'target_files': A list of file paths that need to be CREATED or modified. "
+        "Include NEW files that don't exist yet with their full paths (e.g., 'app/components/Notification.tsx', 'lib/services/event-monitor.ts'). "
+        "Only include code files (not spec files). If this is the first implementation, these will be new files to CREATE.\n"
         "Do NOT output markdown code blocks, just the raw JSON string."
     )
 

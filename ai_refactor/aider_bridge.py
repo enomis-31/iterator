@@ -79,10 +79,10 @@ def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, c
         4. Command-line flags (--model, etc.)
     """
     # Build command with non-interactive flags
-    # --no-git: Don't use git, avoid interactive prompts
-    # --no-auto-commits: Don't auto-commit
+    # Note: We DO NOT use --no-git because Aider uses git to understand code context, see diffs, and track changes. Git is essential!
+    # --no-auto-commits: Don't auto-commit (we handle commits in workflow.py) (we handle commits in workflow.py)
     # --no-show-model-warnings: Suppress model warnings
-    cmd = ["aider", "--no-auto-commits", "--no-show-model-warnings", "--no-git", "--message", prompt]
+    cmd = ["aider", "--no-auto-commits", "--no-show-model-warnings", "--message", prompt]
     
     # Look for Aider config file if not explicitly provided
     if not config_path:
@@ -165,6 +165,7 @@ def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, c
         return 127
     except Exception as e:
         logger.error(f"Unexpected error running Aider: {e}")
-        if verbose:
+        verbose_mode = logger.isEnabledFor(logging.DEBUG)
+        if verbose_mode:
             logger.debug(f"Exception details: {e}", exc_info=True)
         return 1
