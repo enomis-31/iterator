@@ -73,21 +73,25 @@ La cartella `specs/` deve seguire questa convenzione:
       <feature-id-1>/
         spec.md
         plan.md
-        requirements.md
         data-model.md
-        ux.md
-        performance.md
         research.md
         tasks.md
+        quickstart.md
+        checklists/
+          requirements.md
+        contracts/
+          <service-name>.md
       <feature-id-2>/
         spec.md
         plan.md
-        requirements.md
         data-model.md
-        ux.md
-        performance.md
         research.md
         tasks.md
+        quickstart.md
+        checklists/
+          requirements.md
+        contracts/
+          <service-name>.md
       ...
 
 Dove:
@@ -132,16 +136,18 @@ Ogni feature **deve** essere rappresentata da una sottocartella:
 
     specs/<feature-id>/
 
-che contiene i seguenti file (alcuni opzionali ma raccomandati):
+che contiene i seguenti file e cartelle (alcuni opzionali ma raccomandati):
 
-    spec.md          # obbligatorio
-    plan.md          # obbligatorio
-    requirements.md  # consigliato (può essere incluso in spec.md se assente)
-    data-model.md    # opzionale/consigliato
-    ux.md            # opzionale
-    performance.md   # opzionale
-    research.md      # opzionale
-    tasks.md         # obbligatorio
+    spec.md                    # obbligatorio
+    plan.md                    # obbligatorio
+    data-model.md              # opzionale/consigliato
+    research.md                # opzionale
+    tasks.md                   # obbligatorio
+    quickstart.md              # opzionale
+    checklists/
+      requirements.md          # consigliato (può essere incluso in spec.md se assente)
+    contracts/
+      <service-name>.md        # opzionale (uno o più file di contratto servizi)
 
 Descrizione dei file:
 
@@ -181,8 +187,8 @@ Contenuti attesi:
 
 `plan.md` è la vista “come implementarlo”, ad alto livello tecnico.
 
-3.3. requirements.md (consigliato)
-----------------------------------
+3.3. checklists/requirements.md (consigliato)
+---------------------------------------------
 
 Può essere generato/arricchito usando:
 
@@ -194,10 +200,13 @@ Contenuti attesi:
 - Elenco puntuale dei requisiti, con formulazione più rigorosa rispetto
   a `spec.md`
 - Può rimappare FR-xxx e SC-xxx in una forma tabellare o bullet list
+- Checklist di validazione della specifica (completeness, quality, readiness)
 
-Se `requirements.md` non esiste, lo script di conversione Spec Kit → PRD
+Se `checklists/requirements.md` non esiste, lo script di conversione Spec Kit → PRD
 potrà ricavare i requisiti direttamente da `spec.md`, ma la presenza di
-`requirements.md` semplifica parsing e manutenzione.
+`checklists/requirements.md` semplifica parsing e manutenzione.
+
+NOTA: Il file si trova nella sottocartella `checklists/` e non nella root della feature.
 
 3.4. data-model.md (opzionale/consigliato)
 ------------------------------------------
@@ -208,26 +217,7 @@ Modello dati della feature:
 - relazioni
 - schemi (anche pseudo-SQL o pseudo-TypeScript)
 
-3.5. ux.md (opzionale)
-----------------------
-
-Dettagli su:
-
-- comportamenti UI
-- flussi
-- micro-copy
-- stati edge (errori, loading, ecc.)
-
-3.6. performance.md (opzionale)
--------------------------------
-
-Requisiti non funzionali legati a:
-
-- performance
-- scalabilità
-- tempi di risposta
-
-3.7. research.md (opzionale)
+3.5. research.md (opzionale)
 ----------------------------
 
 Contiene:
@@ -235,6 +225,49 @@ Contiene:
 - risultati di `/speckit.analyze`
 - analisi cross-artifact
 - benchmarking o note di ricerca correlate alla feature
+
+3.6. quickstart.md (opzionale)
+-------------------------------
+
+Guida rapida per implementare e testare la feature:
+
+- Prerequisiti e dipendenze
+- Setup steps
+- Esempi di codice
+- Scenari di test manuali
+- Checklist di validazione
+- Note per il testing
+
+Utile per sviluppatori che devono implementare rapidamente la feature o
+validarla manualmente.
+
+3.7. contracts/ (opzionale)
+----------------------------
+
+Cartella contenente i contratti dei servizi/moduli della feature.
+
+Ogni file nella cartella `contracts/` descrive il contratto di un servizio
+o modulo specifico, tipicamente generato durante la fase di pianificazione.
+
+Formato file: `<service-name>.md`
+
+Contenuti attesi per ogni contratto:
+
+- Nome del servizio/modulo e percorso file
+- Scopo del servizio
+- Metodi/funzioni esposte con:
+  - Descrizione
+  - Parametri (tipo e descrizione)
+  - Valore di ritorno
+  - Gestione errori
+  - Comportamenti specifici
+
+Esempio di struttura:
+
+    contracts/
+      filter-service.md
+      workload-calculator.md
+      notification-service.md
 
 3.8. tasks.md (obbligatorio)
 ----------------------------
@@ -320,10 +353,10 @@ Per ogni nuova feature `<feature-id>`, seguire SEMPRE questo ordine:
 2. `/speckit.clarify` (opzionale ma consigliato)
 
    - Istruzioni:
-     - “Usa `/speckit.clarify` per individuare ambiguità nella feature
+     - "Usa `/speckit.clarify` per individuare ambiguità nella feature
         `<feature-id>` e aggiorna `specs/<feature-id>/spec.md`.
-        Se utile, crea/aggiorna `specs/<feature-id>/requirements.md` con un
-        elenco puntuale dei requisiti.”
+        Se utile, crea/aggiorna `specs/<feature-id>/checklists/requirements.md` con un
+        elenco puntuale dei requisiti."
 
 3. `/speckit.plan`
 
@@ -367,10 +400,16 @@ ad esempio `prd_generator.py`) può assumere quanto segue:
 
 - La struttura di `specs/` è quella definita sopra.
 - Per una feature `<feature-id>` esiste la cartella `specs/<feature-id>/`.
-- All’interno della cartella feature esistono **almeno**:
+- All'interno della cartella feature esistono **almeno**:
   - `spec.md`
   - `plan.md`
   - `tasks.md`
+- Opzionalmente possono esistere:
+  - `data-model.md`
+  - `research.md`
+  - `quickstart.md`
+  - `checklists/requirements.md`
+  - `contracts/<service-name>.md` (uno o più file)
 - Il formato dei task in `tasks.md` segue le regole del paragrafo 3.8:
   - righe `- [ ] T<n>: Titolo`
   - eventuali descrizioni sotto forma di bullet indentati (`- Description: ...`).
