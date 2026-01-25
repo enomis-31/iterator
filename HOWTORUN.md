@@ -188,8 +188,9 @@ python -m ai_refactor.prd_generator --feature-id 001-event-notifications
 **What Happens**:
 - Reads `spec.md` and extracts User Stories (US1, US2, US3, ...)
 - Reads `tasks.md` and links tasks to stories via `[USx]` tags
-- Aggregates all spec files into `context.full_concatenation`
+- Stores each spec file's content in the `context.files` dictionary within `prd.json`.
 - Creates/updates `specs/001-event-notifications/prd.json`
+- *Note*: Redundant full concatenation is avoided to keep the PRD lean.
 
 **Verify PRD**:
 ```bash
@@ -222,8 +223,10 @@ python -m ai_refactor.ralph_adapter \
 1. Loads PRD from `specs/001-event-notifications/prd.json`
 2. Selects highest priority story with `status="todo"` (e.g., US1 with P1)
 3. Marks story as `in_progress`, increments `attempts`
-4. Builds rich context from story + PRD context
-5. Calls `workflow.run_once()` with story context
+4. Builds a **lean context** for planning (Story details + `tasks.md` + file manifest).
+5. Calls `workflow.run_once()` which:
+   - Uses a **Planner Agent** to create a strategy.
+   - Executes **Aider** with the full specifications passed as **read-only context** (`--read`).
 6. Updates story status based on result:
    - Success → `status="pass"`, `last_error=null`
    - Failure → `status="in_progress"` or `"fail"`, `last_error` set
@@ -671,7 +674,7 @@ python -m ai_refactor.ralph_adapter \
   --verbose
 
 # Look for: "Story context length: X characters"
-# Look for: "Enhanced context with story context"
+# The Planner should show "Using lean context" messages.
 ```
 
 **Solution**: Ensure `spec_kit.enabled: true` in `.ai-refactor.yml`.

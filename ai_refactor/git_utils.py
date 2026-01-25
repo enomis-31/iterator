@@ -36,7 +36,13 @@ def create_task_branch(task_name: str, prefix: str, repo_root: Path) -> str:
     return branch_name
 
 def get_diff(repo_root: Path, base_ref: str = "HEAD~1") -> str:
-    return run_git(["diff", base_ref], cwd=repo_root)
+    if base_ref == "HEAD":
+        # Show both staged and unstaged changes relative to current HEAD
+        return run_git(["diff", "HEAD"], cwd=repo_root)
+    elif base_ref:
+        return run_git(["diff", base_ref], cwd=repo_root)
+    else:
+        return run_git(["diff"], cwd=repo_root)
 
 def commit_changes(repo_root: Path, message: str):
     # -a stages modified existing files. New files need add potentially.

@@ -161,9 +161,12 @@ def select_next_story(
 
 def build_story_context(story: Dict[str, Any], prd: Dict[str, Any], model_name: Optional[str] = None, verbose: bool = False) -> str:
     """
-    Constructs rich context string from story + PRD context.
-    Combines story description, acceptance_criteria, independent_test
-    and prepends PRD context.full_concatenation for full spec context.
+    Constructs LEAN context string from story + PRD metadata.
+    Includes:
+    - High-level feature info (Title, Description)
+    - Detailed Current User Story (ID, Title, Description, AC, Test)
+    - Content of tasks.md for progress tracking
+    - Manifest of available specification files
     
     Args:
         story: Story dictionary from PRD
@@ -172,12 +175,18 @@ def build_story_context(story: Dict[str, Any], prd: Dict[str, Any], model_name: 
         verbose: Whether to log context details
     
     Returns:
-        Formatted context string for agents (limited to model's context length if model_name provided)
+        Formatted lean context string for agents.
     """
     context_parts = []
     
-    # Add story-specific context FIRST (most important)
-    context_parts.append("=== CURRENT USER STORY ===\n")
+    # 1. High-level Feature Info
+    context_parts.append("=== FEATURE OVERVIEW ===\n")
+    context_parts.append(f"Feature ID: {prd.get('feature_id', 'N/A')}\n")
+    context_parts.append(f"Title: {prd.get('title', 'N/A')}\n")
+    context_parts.append(f"Description: {prd.get('description', 'N/A')}\n\n")
+
+    # 2. Current User Story (The most important part)
+    context_parts.append("=== CURRENT USER STORY TO IMPLEMENT ===\n")
     context_parts.append(f"Story ID: {story.get('id', 'N/A')}\n")
     context_parts.append(f"Title: {story.get('title', 'N/A')}\n")
     context_parts.append(f"Priority: {story.get('priority', 'N/A')}\n")
@@ -193,32 +202,44 @@ def build_story_context(story: Dict[str, Any], prd: Dict[str, Any], model_name: 
     # Add independent test
     independent_test = story.get("independent_test", "")
     if independent_test:
-        context_parts.append(f"\nIndependent Test:\n{independent_test}\n")
+        context_parts.append(f"\nIndependent Test Description:\n{independent_test}\n")
     
-    # Add linked tasks (for reference)
+    # Add linked implementation tasks (just for reference)
     tasks = story.get("tasks", [])
     if tasks:
-        context_parts.append(f"\nLinked Implementation Tasks: {', '.join(tasks)}\n")
-    else:
-        context_parts.append("\n(No linked tasks - story context only)\n")
-    
-    # Add PRD full context AFTER story (less critical, can be truncated)
+        context_parts.append(f"\nLinked Task IDs: {', '.join(tasks)}\n")
+    context_parts.append("\n")
+
+    # 3. Progress tracking via tasks.md
     prd_context = prd.get("context", {})
-    full_concatenation = prd_context.get("full_concatenation", "")
-    if full_concatenation:
-        context_parts.append("\n=== FULL SPECIFICATION CONTEXT ===\n")
-        context_parts.append(full_concatenation)
+    files = prd_context.get("files", {})
+    tasks_content = files.get("tasks.md", "")
+    if tasks_content:
+        context_parts.append("=== PROGRESS TRACKING (tasks.md) ===\n")
+        context_parts.append("Review tasks.md to understand what has been done and what remains.\n")
+        context_parts.append(tasks_content)
+        context_parts.append("\n\n")
+
+    # 4. Manifest of available specifications
+    if files:
+        context_parts.append("=== AVAILABLE SPECIFICATION FILES ===\n")
+        context_parts.append("The coding tool (Aider) has direct access to these files for detailed implementation.\n")
+        for rel_path in sorted(files.keys()):
+            # Skip tasks.md as we already included it for state
+            if rel_path == "tasks.md":
+                continue
+            context_parts.append(f"- {rel_path}\n")
         context_parts.append("\n")
     
     full_context = "".join(context_parts)
     
-    # Limit context if model_name provided
+    # Limit context if model_name provided (though it should be much smaller now)
     if model_name:
         from .context_manager import limit_context_for_model
         full_context = limit_context_for_model(
             full_context,
             model_name,
-            reserve_tokens=2000,  # Reserve for prompt + response
+            reserve_tokens=4000,  # More generous reserve for complex planning
             verbose=verbose
         )
     

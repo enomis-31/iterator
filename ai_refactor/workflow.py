@@ -274,7 +274,27 @@ def run_once(
         coder_model = config.models.get("coder", "ollama/qwen2.5-coder:14b")
         if verbose:
             logger.debug(f"Using coder model: {coder_model}")
+            
+        # Identify spec files for current feature to pass as read-only context to Aider
+        read_only_files = []
+        if feature_id:
+            feature_spec_dir = repo_root / "specs" / feature_id
+            if feature_spec_dir.exists():
+                read_only_files = [
+                    str(f.relative_to(repo_root)) 
+                    for f in feature_spec_dir.glob("*.md") 
+                    if f.is_file()
+                ]
+                # Aggiungiamo anche prd.json se esiste
+                prd_json = feature_spec_dir / "prd.json"
+                if prd_json.exists():
+                    read_only_files.append(str(prd_json.relative_to(repo_root)))
+                
+                if verbose:
+                    logger.debug(f"Adding {len(read_only_files)} spec files as read-only context: {read_only_files}")
+
         aider_exit_code = run_aider(aider_prompt, repo_root, target_files, 
+                  read_only_files=read_only_files,
                   model=coder_model, ollama_base_url=config.ollama_base_url)
         
         # Log Aider result (il summary è già loggato in run_aider)
@@ -332,7 +352,10 @@ def run_once(
     
     # 4. Review (CrewAI)
     try:
-        diff = get_diff(repo_root)
+        # Get diff of staged changes (what Aider just did and added to index)
+        # base_ref="HEAD" will show staged + unstaged changes relative to last commit
+        diff = get_diff(repo_root, base_ref="HEAD")
+        
         if verbose:
             logger.debug(f"Git diff size: {len(diff)} characters")
     except Exception as e:

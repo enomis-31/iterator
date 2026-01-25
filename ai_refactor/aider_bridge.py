@@ -78,7 +78,8 @@ def make_async(fd):
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
-def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, config_path: Optional[Path] = None, 
+def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, 
+              read_only_files: Optional[List[str]] = None, config_path: Optional[Path] = None, 
               model: Optional[str] = None, ollama_base_url: Optional[str] = None) -> int:
     """
     Runs Aider with reactive status updates and full logging.
@@ -88,21 +89,33 @@ def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, c
             logger.error("Ollama connection check failed. Aborting Aider run.")
             return 1
             
+    # Force absolute paths for repo_root to ensure git discovery
+    repo_root = repo_root.resolve()
+            
     cmd = ["aider", "--no-auto-commits", "--no-show-model-warnings", "--message", prompt]
     cmd.extend([
         "--no-suggest-shell-commands", 
         "--no-analytics",
         "--yes-always",
         "--no-pretty",     
-        "--map-tokens", "0" 
+        "--map-tokens", "0",
+        "--git", # Force git detection
+        "--ctx-size", "8192" # Limit context to ensure GPU allocation
     ])
     
     if config_path and config_path.exists():
         cmd.extend(["--config", str(config_path)])
     if model:
         cmd.extend(["--model", model])
+    
+    # Add files to edit
     if files:
         cmd.extend(files)
+        
+    # Add read-only files for context
+    if read_only_files:
+        for ro_file in read_only_files:
+            cmd.extend(["--read", ro_file])
         
     env = os.environ.copy()
     if ollama_base_url:
@@ -165,8 +178,12 @@ def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, c
                         last_output_time = current_time
                         
                         # Show some specific progress in console if we see it
-                        if "Applied changes to" in line or "Creating" in line:
+                        if "Applied edit to" in line or "Creating" in line or "Updating" in line:
                             logger.info(f"[AIDER] {line.strip()}")
+                        
+                        # Monitor model responses (often start with 'I will...' or 'To implement...')
+                        if "I will" in line or "To implement" in line:
+                            logger.info("[AIDER] Model is starting to apply changes...")
                     else:
                         # No output right now, check if we've been waiting long
                         time_since_output = current_time - last_output_time

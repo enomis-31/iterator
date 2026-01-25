@@ -259,12 +259,14 @@ def parse_tasks_md(tasks_path: Path) -> List[TaskSpec]:
 def load_spec_documents(feature_dir: Path) -> Dict[str, Any]:
     """
     Recursively scans the feature directory for relevant spec documents.
-    Returns a structured dictionary of content and a concatenated string.
+    Returns a structured dictionary of content.
+    Removed 'full_concatenation' to reduce PRD size.
     """
     
     # Files/patterns to include
     keep_patterns = [
         "spec\\.md$",
+        "tasks\\.md$",
         "plan\\.md$",
         "data-model\\.md$", 
         "research\\.md$",
@@ -273,14 +275,9 @@ def load_spec_documents(feature_dir: Path) -> Dict[str, Any]:
     ]
     
     context_data = {
-        "files": {},
-        "full_concatenation": ""
+        "files": {}
     }
     
-    full_text_parts = []
-
-    # Sort files to have deterministic order (spec.md first usually good)
-    # But walk yields arbitrary order. We'll collect then sort.
     found_files = []
     
     for path in feature_dir.rglob("*.md"):
@@ -296,64 +293,35 @@ def load_spec_documents(feature_dir: Path) -> Dict[str, Any]:
         if is_relevant:
             found_files.append((rel_path, path))
             
-    # Sort files in logical order: spec.md → plan.md → data-model.md → research.md → quickstart.md → contracts/*
+    # Sort files in logical order
     def sort_key(item):
         path_str = item[0].lower()
-        # Define priority order
         priority_map = {
             "spec.md": "0",
+            "tasks.md": "0.1",
             "plan.md": "1",
             "data-model.md": "2",
             "research.md": "3",
             "quickstart.md": "4"
         }
         
-        # Check if it's a contracts file
         if path_str.startswith("contracts/"):
-            # Sort contracts alphabetically after other files
             return "5_" + path_str
         elif path_str in priority_map:
             return priority_map[path_str] + "_" + path_str
         else:
-            # Other files go after priority files but before contracts
             return "4.5_" + path_str
 
     found_files.sort(key=sort_key)
-
-    # File type descriptions for better context
-    file_descriptions = {
-        "spec.md": "Feature specification with user stories, requirements, and acceptance criteria",
-        "plan.md": "Implementation plan with technical architecture and design decisions",
-        "data-model.md": "Data model definitions and entity relationships",
-        "research.md": "Research findings and technical decision rationale",
-        "quickstart.md": "Quick start guide for implementation and testing"
-    }
 
     for rel_path, full_path in found_files:
         try:
             content = full_path.read_text(encoding="utf-8")
             # Store in map using relative path as key
             context_data["files"][rel_path] = content
-            
-            # Get file description if available
-            file_desc = file_descriptions.get(rel_path.lower(), "Specification document")
-            
-            # Count lines for metadata
-            line_count = len(content.splitlines())
-            
-            # Append to full text with improved formatting
-            header = f"\n\n{'='*40}\nFILE: {rel_path}\nTYPE: {file_desc}\nLINES: {line_count}\n{'='*40}\n\n"
-            full_text_parts.append(header + content)
-            
         except Exception as e:
             logger.warning(f"Failed to read spec file {rel_path}: {e}")
 
-    # Join with proper spacing (ensure no double newlines at start)
-    concatenated = "".join(full_text_parts)
-    # Clean up any excessive newlines at the beginning
-    concatenated = concatenated.lstrip()
-    
-    context_data["full_concatenation"] = concatenated
     return context_data
 
 def generate_prd(

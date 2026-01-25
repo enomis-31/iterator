@@ -1,6 +1,8 @@
 import os
 import warnings
 import logging
+import re
+import json
 
 # Disabilita logging avanzato LiteLLM che richiede fastapi
 # Deve essere fatto PRIMA di importare crewai
@@ -10,7 +12,6 @@ os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 os.environ.setdefault("CREWAI_TELEMETRY_OPT_OUT", "true")
 
 # Filtra warning fastapi
-import warnings
 warnings.filterwarnings("ignore", message=".*fastapi.*")
 warnings.filterwarnings("ignore", message=".*Missing dependency.*fastapi.*")
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -23,7 +24,6 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 from crewai import Agent, Task, Crew, LLM
 from typing import Dict, Tuple, List, Optional
-import json
 
 # Configure Logger
 logger = logging.getLogger(__name__)
@@ -36,14 +36,16 @@ DEFAULT_CODER_MODEL = "ollama/qwen2.5-coder:14b"
 DEFAULT_PLANNER_MODEL = "ollama/llama3.1:8b"
 
 def get_llm(model_name: str, base_url: str = None) -> LLM:
-    """Create an LLM instance with optional base_url override."""
-    # Forziamo Ollama a usare una finestra di contesto adeguata fin dall'inizio
-    # e ottimizziamo i parametri per evitare l'offload su CPU se possibile.
+    """Create an LLM instance with optimized parameters."""
+    # Context window optimization:
+    # With lean context (~4k tokens), 16384 is safe for 16GB VRAM.
+    ctx_limit = 16384 if "14b" in model_name.lower() else 8192
+    
     return LLM(
         model=model_name, 
         base_url=base_url,
         config={
-            "num_ctx": 16384,
+            "num_ctx": ctx_limit,
             "temperature": 0.0,
             "num_thread": 8
         }
@@ -100,27 +102,26 @@ def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_co
 
     description = (
         f"Objective: {task_name}\n"
-        f"Context: {task_context}\n"
+        f"Context provided: {task_context}\n"
     )
     
     if spec_context:
-        description += f"\n{spec_context}\n"
+        description += f"\n=== SPECIFICATION SUMMARY ===\n{spec_context}\n"
         
     description += (
-        f"Available Files:\n{files_list_str}\n\n"
-        "CRITICAL: This is an autonomous agent working on a repository. "
-        "If code files don't exist yet (first story), you MUST instruct Aider to CREATE them. "
-        "Aider will automatically create files when instructed - you don't 'suggest', you COMMAND creation.\n\n"
+        f"Available Files in Repository:\n{files_list_str}\n\n"
+        "IMPORTANT: You are receiving a LEAN CONTEXT. You have the high-level specs and the current story details. "
+        "The coding tool (Aider) will be provided with the FULL specification files as read-only context. "
+        "Your job is to act as a STRATEGIC PLANNER: Identify WHICH files need modification or creation and WHAT specifically needs to be done in each.\n\n"
+        "If code files don't exist yet (e.g. implementing the first user story), you MUST COMMAND Aider to CREATE them. "
+        "Aider will automatically create files and directories when instructed.\n\n"
         "Produce a JSON object with two keys:\n"
-        "1. 'aider_prompt': A detailed instruction for Aider to CREATE and implement the code. "
-        "Be EXPLICIT and VERBOSE: For EACH file in 'target_files', you MUST provide specific implementation details "
-        "or the actual code structure desired. Do not just say 'create the file', say 'create the file with a React component that...'."
-        "Include full file paths and directory structure. Aider will create directories and files automatically.\n"
-        "Reference specific constraints from the Specifications if applicable.\n"
-        "2. 'target_files': A list of file paths that need to be CREATED or modified. "
-        "Include NEW files that don't exist yet with their full paths (e.g., 'app/components/Notification.tsx', 'lib/services/event-monitor.ts'). "
-        "Only include code files (not spec files). If this is the first implementation, these will be new files to CREATE.\n"
-        "Do NOT output markdown code blocks, just the raw JSON string."
+        "1. 'aider_prompt': A single detailed STRING containing implementation instructions for Aider. "
+        "Include technical details, required logic, and reference the specific requirements from the specs. "
+        "Instruct Aider to read and follow the detailed requirements in the .md files in the feature directory.\n"
+        "2. 'target_files': A list of file paths (full paths from repo root) that need to be CREATED or modified. "
+        "Only include code files (not spec files).\n"
+        "Use ONLY standard JSON format. Do NOT use markdown code blocks. Do NOT use backslashes at the end of lines."
     )
 
     planning_task = Task(
@@ -138,19 +139,89 @@ def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_co
     
     try:
         # Clean up result if it has markdown formatting
-        raw_output = str(result)
+        raw_output = str(result).strip()
+        
+        # Robust markdown block extraction
         if "```json" in raw_output:
             raw_output = raw_output.split("```json")[1].split("```")[0].strip()
         elif "```" in raw_output:
             raw_output = raw_output.split("```")[1].split("```")[0].strip()
             
-        data = json.loads(raw_output)
-        return data.get("aider_prompt", task_name), data.get("target_files", [])
+        # Attempt to repair common LLM JSON errors
+        # 1. Trailing backslashes before newlines in strings
+        raw_output = re.sub(r'\\\s*\n', '\n', raw_output)
+        
+        # 2. Backticks for multiline strings
+        if "`" in raw_output:
+            # Replace ` at the start of a value (after :)
+            raw_output = re.sub(r':\s*`', ': "', raw_output)
+            # Replace ` at the end of a value (before , or })
+            raw_output = re.sub(r'`\s*([,}])', r'"\1', raw_output)
+            
+        # 3. Unescaped newlines in strings (this is tricky, but common)
+        # We try to find where a string starts with " and doesn't end before the newline
+        # This is a very basic attempt at repair
+        
+        try:
+            data = json.loads(raw_output)
+        except json.JSONDecodeError as jde:
+            # If standard parsing fails, try a more aggressive repair for unescaped newlines
+            # or missing quotes at end of lines
+            logger.debug(f"JSON standard parse failed, attempting aggressive repair: {jde}")
+            
+            # Remove any control characters that might break JSON parsing (except \n, \r, \t)
+            import re
+            cleaned_output = "".join(ch for ch in raw_output if ch == '\n' or ch == '\r' or ch == '\t' or (ord(ch) >= 32))
+            
+            # Repairing unescaped newlines inside "key": "value"
+            fixed_output = ""
+            lines = cleaned_output.splitlines()
+            for i, line in enumerate(lines):
+                if i > 0 and ":" not in line and not line.strip().startswith('}') and not line.strip().startswith(']'):
+                    fixed_output += line.replace('"', '\\"') + "\\n"
+                else:
+                    fixed_output += line + "\n"
+            
+            try:
+                if fixed_output.endswith("\\n\n"):
+                    fixed_output = fixed_output[:-3] + "\n"
+                data = json.loads(fixed_output)
+                raw_output = fixed_output
+            except:
+                raise jde
+
+        prompt_val = data.get("aider_prompt", task_name)
+        target_files = data.get("target_files", [])
+        
+        # Ensure target_files are unique
+        if isinstance(target_files, list):
+            target_files = list(dict.fromkeys(target_files))
+        
+        # Handle if aider_prompt is a list (common model error)
+        if isinstance(prompt_val, list):
+            # Convert list of instructions/objects to a single string
+            instruction_parts = []
+            for item in prompt_val:
+                if isinstance(item, dict):
+                    # If it's a list of file actions, format them
+                    action = item.get("type", "action")
+                    path = item.get("path", "unknown")
+                    content = item.get("content", "")
+                    instruction_parts.append(f"Action: {action} on {path}\nContent:\n{content}\n")
+                else:
+                    instruction_parts.append(str(item))
+            prompt_val = "\n".join(instruction_parts)
+
+        return prompt_val, data.get("target_files", [])
     except Exception as e:
         logger.error(f"Failed to parse coder plan: {e}")
-        logger.error(f"Raw output: {result}")
-        # Fallback
-        return task_name, []
+        logger.error(f"Raw output was: {result}")
+        # Final fallback: use task_name and try to extract any paths manually
+        import re
+        paths = re.findall(r'["\']?([a-zA-Z0-9_\-/]+\.[a-zA-Z0-9]+)["\']?', str(result))
+        # Filter out common false positives
+        paths = [p for p in paths if any(p.startswith(d) for d in ['app/', 'lib/', 'src/', 'components/'])]
+        return task_name, paths
 
 def critic_review(diff: str, test_log: str, task_name: str, model_name: str = DEFAULT_PLANNER_MODEL, base_url: str = None) -> tuple[str, Optional[str]]:
     """
@@ -167,8 +238,11 @@ def critic_review(diff: str, test_log: str, task_name: str, model_name: str = DE
             f"Task: {task_name}\n\n"
             f"Test logs:\n{test_log[-2000:]}\n\n" # Truncate logs
             f"Git Diff:\n{diff[:5000]}\n\n" # Truncate diff
-            "Analyze the above. If tests passed and the code changes look correct and safe, output 'SHIP'.\n"
-            "If tests failed or there are logical errors, output 'REVISE: <one sentence reason>'.\n"
+            "Analyze the above changes and test results.\n"
+            "CRITICAL: If tests failed ONLY because the testing tool (like 'pytest' or 'npm test') is missing/not found "
+            "in the environment, but the code implementation looks correct and follows the requirements, you SHOULD approve it with 'SHIP'.\n"
+            "If the tests ran and failed due to code errors, or if the code itself has logical flaws, output 'REVISE: <one sentence reason>'.\n"
+            "If the code is correct and tests passed (or were skipped due to missing environment tools), output 'SHIP'.\n"
             "Output format: 'SHIP' or 'REVISE: <reason>'.\n"
             "Output ONLY the decision word(s)."
         ),

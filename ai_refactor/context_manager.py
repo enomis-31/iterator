@@ -102,37 +102,43 @@ def truncate_context_intelligently(
         f"Truncating... (model: {model_name or 'unknown'})"
     )
     
-    # Strategy: Keep beginning (story context) and truncate full_concatenation
-    # Look for the separator between story context and full spec context
-    story_marker = "=== CURRENT USER STORY ==="
-    spec_marker = "=== FULL SPECIFICATION CONTEXT ==="
+    # Strategy: Keep beginning (story context) and truncate from the middle
+    # New markers for lean context
+    story_marker = "=== CURRENT USER STORY TO IMPLEMENT ==="
+    progress_marker = "=== PROGRESS TRACKING (tasks.md) ==="
+    manifest_marker = "=== AVAILABLE SPECIFICATION FILES ==="
     
-    if story_marker in context and spec_marker in context:
-        # Split into story part and spec part
-        parts = context.split(spec_marker, 1)
+    # Old markers (fallback)
+    old_story_marker = "=== CURRENT USER STORY ==="
+    old_spec_marker = "=== FULL SPECIFICATION CONTEXT ==="
+    
+    if story_marker in context:
+        # We have the new lean structure
+        # The story and feature overview are usually at the beginning
+        # If we need to truncate, we can truncate from the end of tasks.md content 
+        # or the manifest if it gets too large for some reason.
+        pass # Fallback to simple truncation if lean context is somehow huge
+    elif old_story_marker in context and old_spec_marker in context:
+        # Legacy structure truncation logic
+        parts = context.split(old_spec_marker, 1)
         story_part = parts[0]
         spec_part = parts[1] if len(parts) > 1 else ""
         
         story_tokens = estimate_tokens(story_part)
         
-        # If story part alone is too large, truncate it
-        if story_tokens > available_tokens * 0.8:  # Reserve 80% for story
-            # Truncate story part from the end
-            story_chars = (available_tokens * 0.8 * 3)  # Convert back to chars using conservative 3
+        if story_tokens > available_tokens * 0.8:
+            story_chars = (available_tokens * 0.8 * 3)
             truncated_story = story_part[:int(story_chars)]
             truncated_story += "\n\n[Context truncated due to length limits...]"
             return truncated_story
         
-        # Calculate how much space we have for spec part
-        spec_available = available_tokens - story_tokens - 200  # Smaller buffer
+        spec_available = available_tokens - story_tokens - 200
         if spec_available > 0:
             spec_chars = spec_available * 3
-            # Keep beginning of spec (usually most important)
             truncated_spec = spec_part[:int(spec_chars)]
             truncated_spec += "\n\n[Specification context truncated due to length limits...]"
-            return story_part + spec_marker + "\n" + truncated_spec
+            return story_part + old_spec_marker + "\n" + truncated_spec
         else:
-            # No space for spec, return story only
             return story_part + "\n\n[Specification context omitted due to length limits]"
     
     # Fallback: simple truncation from end
