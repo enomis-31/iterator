@@ -6,6 +6,15 @@ from typing import Dict, Any, Optional
 from .config import load_config
 
 logger = logging.getLogger(__name__)
+
+class LiteLLMFilter(logging.Filter):
+    """Filter to suppress non-critical LiteLLM errors (e.g., fastapi dependency)"""
+    def filter(self, record):
+        msg = record.getMessage().lower()
+        # Filter non-critical errors about fastapi dependency
+        if "fastapi" in msg or ("missing dependency" in msg and "fastapi" in msg):
+            return False
+        return True
 from .git_utils import (
     get_repo_root, 
     ensure_clean_worktree, 
@@ -40,6 +49,14 @@ def run_tests(test_command: str, cwd: Path) -> tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
+def log_phase(phase_name: str, verbose: bool = False):
+    """Print visual separator for workflow phase"""
+    logger.info("=" * 80)
+    logger.info(f"PHASE: {phase_name}")
+    logger.info("=" * 80)
+    if verbose:
+        logger.debug(f"Starting {phase_name} phase...")
+
 def enhance_spec_context_with_story(spec_context: str, story_context: str) -> str:
     """
     Prepends story-specific context to existing spec context.
@@ -67,6 +84,14 @@ def run_once(
     verbose: bool = False,
     story_context: Optional[str] = None
 ) -> Dict[str, Any]:
+    
+    # Filter non-critical LiteLLM errors (fastapi dependency warnings)
+    litellm_logger = logging.getLogger("LiteLLM")
+    litellm_filter = LiteLLMFilter()
+    # Only add filter if not already added (avoid duplicates)
+    if not any(isinstance(f, LiteLLMFilter) for f in litellm_logger.filters):
+        litellm_logger.addFilter(litellm_filter)
+    litellm_logger.setLevel(logging.WARNING)  # Only show warnings and errors, not info/debug
     
     try:
         config = load_config(repo_root)
@@ -119,13 +144,15 @@ def run_once(
             
             if not aider_prompt:
                 # Generate plan
-                logger.info("Generating plan with Coder Agent...")
+                log_phase("PLAN", verbose)
                 coder_model = config.models.get("coder", "ollama/qwen2.5-coder:14b")
                 if verbose:
                     logger.debug(f"Using coder model: {coder_model}")
                 aider_prompt, target_files = coder_plan(task_name, "User requested refactor.", all_files, spec_context, coder_model, base_url=config.ollama_base_url)
+                logger.info(f"Plan generated: prompt length={len(aider_prompt)}, target files={len(target_files)}")
                 if verbose:
-                    logger.debug(f"Generated prompt length: {len(aider_prompt)}, target files: {len(target_files)}")
+                    logger.debug(f"Generated prompt: {aider_prompt[:200]}...")
+                    logger.debug(f"Target files: {target_files}")
         except Exception as e:
             logger.warning(f"Failed to generate plan with agent: {e}")
             if verbose:
@@ -137,6 +164,7 @@ def run_once(
         aider_prompt = task_name # Fallback if agent failed or no prompt provided
         
     # 2. Code (Aider)
+    log_phase("CODE", verbose)
     logger.info(f"Starting Aider with prompt: {aider_prompt[:100]}..." if len(aider_prompt) > 100 else f"Starting Aider with prompt: {aider_prompt}")
     try:
         coder_model = config.models.get("coder", "ollama/qwen2.5-coder:14b")
@@ -144,6 +172,12 @@ def run_once(
             logger.debug(f"Using coder model: {coder_model}, target files: {target_files}")
         aider_exit_code = run_aider(aider_prompt, repo_root, target_files, 
                   model=coder_model, ollama_base_url=config.ollama_base_url)
+        
+        # Log Aider result
+        if aider_exit_code == 0:
+            logger.info("Aider completed successfully")
+        else:
+            logger.warning(f"Aider exited with code {aider_exit_code}")
         
         # Check Aider exit code
         if aider_exit_code != 0:
@@ -165,15 +199,20 @@ def run_once(
         }
     
     # 3. Test
+    log_phase("TEST", verbose)
     if skip_tests:
         logger.info("Skipping tests (--no-tests flag set).")
         tests_ok, test_log = True, "Tests skipped via --no-tests flag"
     else:
-        logger.info("Running tests...")
+        logger.info(f"Running tests: {config.tests}")
         try:
             tests_ok, test_log = run_tests(config.tests, repo_root)
-            if verbose:
-                logger.debug(f"Test result: {'PASSED' if tests_ok else 'FAILED'}")
+            if tests_ok:
+                logger.info("Tests PASSED")
+            else:
+                logger.warning("Tests FAILED")
+                if verbose:
+                    logger.debug(f"Test output: {test_log[:500]}")
         except Exception as e:
             logger.error(f"Failed to run tests: {e}")
             if verbose:
@@ -201,14 +240,16 @@ def run_once(
     
     decision = "SHIP"
     if use_agents:
+        log_phase("REVIEW", verbose)
         try:
             logger.info("Reviewing changes with Critic Agent...")
             planner_model = config.models.get("planner", "ollama/llama3.1:8b")
             if verbose:
                 logger.debug(f"Using planner model: {planner_model}")
             decision = critic_review(diff, test_log, task_name, planner_model, base_url=config.ollama_base_url)
+            logger.info(f"Review decision: {decision}")
             if verbose:
-                logger.debug(f"Critic decision: {decision}")
+                logger.debug(f"Diff size: {len(diff)} characters")
         except Exception as e:
             logger.warning(f"Failed to review with agent: {e}")
             if verbose:

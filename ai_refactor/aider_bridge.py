@@ -1,8 +1,11 @@
 import subprocess
 import shlex
 import os
+import logging
 from pathlib import Path
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, config_path: Optional[Path] = None, 
               model: Optional[str] = None, ollama_base_url: Optional[str] = None) -> int:
@@ -36,7 +39,7 @@ def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, c
     
     if config_path and config_path.exists():
         cmd.extend(["--config", str(config_path)])
-        print(f"Using Aider config: {config_path}")
+        logger.info(f"Using Aider config: {config_path}")
     
     # Configure Aider to use Ollama if model and base_url are provided
     env = os.environ.copy()
@@ -53,21 +56,17 @@ def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, c
             api_base = f"{ollama_base_url}/v1"
             env["OPENAI_API_BASE"] = api_base
             env["OPENAI_API_KEY"] = "ollama"  # Ollama doesn't require a real key
-            print(f"Configured Ollama endpoint: {ollama_base_url}")
+            logger.info(f"Configured Ollama endpoint: {ollama_base_url}")
         # Set model via command line (Aider supports --model flag)
-        if model.startswith("ollama/"):
-            # Remove "ollama/" prefix for --model flag
-            model_name = model.replace("ollama/", "")
-            cmd.extend(["--model", model_name])
-        else:
-            cmd.extend(["--model", model])
-        print(f"Using model: {model}")
+        # Keep full format "ollama/model" for LiteLLM to recognize provider
+        cmd.extend(["--model", model])
+        logger.info(f"Using model: {model}")
     
     if files:
         # Resolve files relative to repo_root
         cmd.extend(files)
         
-    print(f"Running Aider with command: {' '.join(shlex.quote(c) for c in cmd)}")
+    logger.debug(f"Running Aider with command: {' '.join(shlex.quote(c) for c in cmd)}")
     
     try:
         # Run Aider non-interactively with automatic responses to prompts
@@ -82,5 +81,5 @@ def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, c
         )
         return result.returncode
     except FileNotFoundError:
-        print("Error: 'aider' command not found. Please install it via 'pipx install aider-chat'.")
+        logger.error("Error: 'aider' command not found. Please install it via 'pipx install aider-chat'.")
         return 127

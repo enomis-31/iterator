@@ -248,6 +248,39 @@ def update_story_after_attempt(
                 f"Error: {error_msg}"
             )
 
+def print_iteration_summary(iteration_result: Dict[str, Any], story: Dict[str, Any]) -> None:
+    """
+    Print clear summary of iteration result.
+    Shows story status, attempts, decision, test results, and next steps.
+    """
+    print("\n" + "=" * 80)
+    print("ITERATION SUMMARY")
+    print("=" * 80)
+    print(f"Story: {story.get('id')} - {story.get('title', 'N/A')}")
+    print(f"Status: {story.get('status', 'unknown')}")
+    print(f"Attempts: {story.get('attempts', 0)}")
+    
+    result = iteration_result.get('result', {})
+    decision = result.get('decision', 'UNKNOWN')
+    tests_ok = result.get('tests_ok', False)
+    
+    print(f"\nDecision: {decision}")
+    print(f"Tests: {'PASSED' if tests_ok else 'FAILED'}")
+    
+    if story.get('last_error'):
+        print(f"\nError: {story['last_error']}")
+    
+    status = story.get('status')
+    if status == 'pass':
+        print("\n✅ Story PASSED - Ready to proceed to next story")
+    elif status == 'fail':
+        print("\n❌ Story FAILED - Max attempts reached")
+    elif status == 'in_progress':
+        print("\n⚠️  Story needs revision - Will retry on next iteration")
+    else:
+        print(f"\n📝 Story status: {status}")
+    print("=" * 80 + "\n")
+
 def run_ralph_iteration(
     repo_root: Path,
     prd: Dict[str, Any],
@@ -326,13 +359,19 @@ def run_ralph_iteration(
         logger.error(f"Failed to save PRD after iteration: {e}")
         # Continue anyway - state is in memory
     
-    return {
+    # Build iteration result
+    iteration_result = {
         "story_id": story_id,
         "story_title": story.get("title"),
         "attempt": story["attempts"],
         "result": result,
         "status": story["status"]
     }
+    
+    # Print summary
+    print_iteration_summary(iteration_result, story)
+    
+    return iteration_result
 
 def run_ralph_loop(
     repo_root: Path,
@@ -549,19 +588,32 @@ def main():
         force=args.force,
     )
 
-    print("\n--- Ralph Loop Summary ---")
+    print("\n" + "=" * 80)
+    print("RALPH LOOP SUMMARY")
+    print("=" * 80)
     print(f"Feature: {result['feature_id']}")
-    print(f"Iterations: {result['iterations']}")
-    print(f"Stories total: {result['stories_total']}")
-    print(f"Stories pass:  {result['stories_pass']}")
-    print(f"Stories fail:  {result['stories_fail']}")
+    print(f"Mode: {args.mode}")
+    print(f"Iterations executed: {result['iterations']}")
+    print(f"\nStories Status:")
+    print(f"  Total:    {result['stories_total']}")
+    print(f"  ✅ Pass:  {result['stories_pass']}")
+    print(f"  ❌ Fail:  {result['stories_fail']}")
     if 'stories_todo' in result:
-        print(f"Stories todo: {result['stories_todo']}")
+        print(f"  📝 Todo:  {result['stories_todo']}")
     if 'stories_in_progress' in result:
-        print(f"Stories in_progress: {result['stories_in_progress']}")
-
+        print(f"  🔄 In Progress: {result['stories_in_progress']}")
+    
     if result.get("error"):
-         print(f"Error occurred: {result['error']}")
+        print(f"\n⚠️  Error: {result['error']}")
+    
+    # Final status message
+    if result["stories_fail"] > 0:
+        print("\n❌ Some stories failed. Check PRD for details.")
+    elif result["stories_pass"] == result["stories_total"] and result["stories_total"] > 0:
+        print("\n✅ All stories passed! Feature complete.")
+    elif result.get('stories_todo', 0) > 0 or result.get('stories_in_progress', 0) > 0:
+        print("\n⚠️  Some stories still pending. Run again to continue.")
+    print("=" * 80)
 
     if result["stories_fail"] > 0:
         sys.exit(1)
