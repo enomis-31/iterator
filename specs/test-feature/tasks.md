@@ -1,0 +1,4 @@
+- [ ] T1: Implement the "Blink" button
+  - Description: Create a button that makes the entire page blink neon green every 5 seconds.
+- [ ] T2: Add "Random Sarcasm" generator
+  - Description: A feature that replaces all vowels in user input with 'o' randomly.
