@@ -2,6 +2,12 @@
   "feature_id": "test-feature",
   "title": "Test Feature: UI Interactions",
   "description": "This feature introduces interactive UI elements for testing and verification purposes. The goal is to verify the autonomous loop's ability to implement simple UI interactions and logical transformations. The feature consists of two main components: 1. A visual \"Blink\" effect for the page. 2. A text transformation tool for \"Sarcasm\" generation.",
+  "context": {
+    "files": {
+      "spec.md": "# Test Feature: UI Interactions\n\nThis feature introduces interactive UI elements for testing and verification purposes.\nThe goal is to verify the autonomous loop's ability to implement simple UI interactions and logical transformations.\n\n## Overview\nThe feature consists of two main components:\n1. A visual \"Blink\" effect for the page.\n2. A text transformation tool for \"Sarcasm\" generation.\n"
+    },
+    "full_concatenation": "\n\n========================================\nFILE: spec.md\n========================================\n\n# Test Feature: UI Interactions\n\nThis feature introduces interactive UI elements for testing and verification purposes.\nThe goal is to verify the autonomous loop's ability to implement simple UI interactions and logical transformations.\n\n## Overview\nThe feature consists of two main components:\n1. A visual \"Blink\" effect for the page.\n2. A text transformation tool for \"Sarcasm\" generation.\n"
+  },
   "stories": [
     {
       "id": "T1",
@@ -9,7 +15,7 @@
       "description": "Create a button that makes the entire page blink neon green every 5 seconds.",
       "acceptance_criteria": [
         "Verify Implement the \"Blink\" button",
-        "Verify details: Create a button that makes the entire page blink neon green every 5 seconds."
+        "Verify: Create a button that makes the entire page blink neon green every 5 seconds."
       ],
       "status": "todo",
       "attempts": 0,
@@ -21,7 +27,7 @@
       "description": "A feature that replaces all vowels in user input with 'o' randomly.",
       "acceptance_criteria": [
         "Verify Add \"Random Sarcasm\" generator",
-        "Verify details: A feature that replaces all vowels in user input with 'o' randomly."
+        "Verify: A feature that replaces all vowels in user input with 'o' randomly."
       ],
       "status": "todo",
       "attempts": 0,
