@@ -4,7 +4,7 @@ import logging
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -12,6 +12,9 @@ from .config import load_config
 from .workflow import run_once
 from .git_utils import get_repo_root
 from .prd_generator import generate_prd
+
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +236,7 @@ def update_story_after_attempt(
     Marks as fail if max_attempts exceeded.
     """
     story["attempts"] = story.get("attempts", 0) + 1
-    story["last_updated_at"] = datetime.utcnow().isoformat() + "Z"
+    story["last_updated_at"] = datetime.now(UTC).isoformat() + "Z"
     
     # Check if successful
     if result.get("decision") == "SHIP" and result.get("tests_ok", False):
@@ -329,7 +332,7 @@ def run_ralph_iteration(
     # Update story to in_progress and increment attempts
     story["status"] = "in_progress"
     story["attempts"] = story.get("attempts", 0) + 1
-    story["last_updated_at"] = datetime.utcnow().isoformat() + "Z"
+    story["last_updated_at"] = datetime.now(UTC).isoformat() + "Z"
     
     # Save PRD state before execution
     _save_prd(prd_path, prd)
@@ -460,10 +463,9 @@ def run_ralph_loop(
             "iterations": 0
         }
     
-    # Update ralph_metadata
     if "ralph_metadata" not in prd:
         prd["ralph_metadata"] = {}
-    prd["ralph_metadata"]["last_run_at"] = datetime.utcnow().isoformat() + "Z"
+    prd["ralph_metadata"]["last_run_at"] = datetime.now(UTC).isoformat() + "Z"
     prd["ralph_metadata"]["last_run_mode"] = mode
     prd["ralph_metadata"]["total_iterations"] = prd["ralph_metadata"].get("total_iterations", 0)
     

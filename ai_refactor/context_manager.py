@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 # Model context length limits (in tokens)
 # Approximate: 1 token ≈ 4 characters for English/code
 MODEL_CONTEXT_LIMITS: Dict[str, int] = {
-    "qwen2.5-coder:14b": 32768,
-    "qwen2.5-coder": 32768,
+    "qwen2.5-coder:14b": 16384, # Ridotto per stare in VRAM (16GB) con KV cache
+    "qwen2.5-coder": 16384,
     "llama3.1:8b": 8192,
     "llama3.1": 8192,
     "llama3.3:70b": 131072,
@@ -23,13 +23,12 @@ MODEL_CONTEXT_LIMITS: Dict[str, int] = {
 def estimate_tokens(text: str) -> int:
     """
     Estimate token count from text.
-    Approximation: ~4 characters per token for English/code.
-    More accurate for code: ~3-4 chars/token.
+    Approximation: ~3 characters per token for English/code (more conservative for code).
     """
     if not text:
         return 0
-    # Conservative estimate: 4 chars per token
-    return len(text) // 4
+    # Conservative estimate for code: 3 chars per token
+    return len(text) // 3
 
 def get_model_context_limit(model_name: str) -> int:
     """
@@ -115,20 +114,19 @@ def truncate_context_intelligently(
         spec_part = parts[1] if len(parts) > 1 else ""
         
         story_tokens = estimate_tokens(story_part)
-        spec_tokens = estimate_tokens(spec_part)
         
         # If story part alone is too large, truncate it
-        if story_tokens > available_tokens * 0.7:  # Reserve 70% for story
+        if story_tokens > available_tokens * 0.8:  # Reserve 80% for story
             # Truncate story part from the end
-            story_chars = (available_tokens * 0.7 * 4)  # Convert back to chars
+            story_chars = (available_tokens * 0.8 * 3)  # Convert back to chars using conservative 3
             truncated_story = story_part[:int(story_chars)]
             truncated_story += "\n\n[Context truncated due to length limits...]"
             return truncated_story
         
         # Calculate how much space we have for spec part
-        spec_available = available_tokens - story_tokens - 500  # Reserve buffer
+        spec_available = available_tokens - story_tokens - 200  # Smaller buffer
         if spec_available > 0:
-            spec_chars = spec_available * 4
+            spec_chars = spec_available * 3
             # Keep beginning of spec (usually most important)
             truncated_spec = spec_part[:int(spec_chars)]
             truncated_spec += "\n\n[Specification context truncated due to length limits...]"
@@ -138,7 +136,7 @@ def truncate_context_intelligently(
             return story_part + "\n\n[Specification context omitted due to length limits]"
     
     # Fallback: simple truncation from end
-    max_chars = available_tokens * 4
+    max_chars = available_tokens * 3
     truncated = context[:int(max_chars)]
     truncated += "\n\n[Context truncated due to length limits...]"
     return truncated

@@ -19,7 +19,13 @@ def extract_aider_summary(output: str) -> str:
     Extract concise summary from Aider output.
     Looks for file modifications and errors.
     """
-    # Pattern 1: Look for "Modified X files" or similar
+    # Pattern 1: Look for "Applied edit to X" (Common in 'whole' or 'architect' format)
+    applied_edits = re.findall(r'Applied edit to (.*)', output)
+    if applied_edits:
+        unique_files = list(dict.fromkeys(applied_edits))
+        return f"Modified {len(unique_files)} files: {', '.join(unique_files[:3])}{'...' if len(unique_files) > 3 else ''}"
+
+    # Pattern 2: Look for "Modified X files" or similar
     modified_match = re.search(r'Modified\s+(\d+)\s+files?', output, re.IGNORECASE)
     if modified_match:
         count = modified_match.group(1)

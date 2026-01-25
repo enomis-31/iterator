@@ -188,6 +188,7 @@ def run_once(
             if not aider_prompt:
                 # Generate plan
                 log_phase("PLAN", verbose)
+                logger.info("Planner Agent is thinking (this may take a minute)...")
                 coder_model = config.models.get("coder", "ollama/qwen2.5-coder:14b")
                 if verbose:
                     logger.debug(f"Using coder model: {coder_model}")
@@ -299,6 +300,7 @@ def run_once(
             logger.warning(f"Aider exited with code {aider_exit_code}. Continuing anyway...")
     except Exception as e:
         logger.error(f"Failed to run Aider: {e}")
+        # Not showing full traceback in console unless verbose
         if verbose:
             logger.debug(f"Exception details: {e}", exc_info=True)
         return {
@@ -352,7 +354,7 @@ def run_once(
     if use_agents:
         log_phase("REVIEW", verbose)
         try:
-            logger.info("Reviewing changes with Critic Agent...")
+            logger.info("Critic Agent is reviewing changes (this may take a minute)...")
             planner_model = config.models.get("planner", "ollama/llama3.1:8b")
             if verbose:
                 logger.debug(f"Using planner model: {planner_model}")

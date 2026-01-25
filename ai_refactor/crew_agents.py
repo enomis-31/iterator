@@ -6,14 +6,20 @@ import logging
 # Deve essere fatto PRIMA di importare crewai
 os.environ.setdefault("LITELLM_LOG", "ERROR")
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "")
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+os.environ.setdefault("CREWAI_TELEMETRY_OPT_OUT", "true")
 
 # Filtra warning fastapi
+import warnings
 warnings.filterwarnings("ignore", message=".*fastapi.*")
 warnings.filterwarnings("ignore", message=".*Missing dependency.*fastapi.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-# Configura logging per sopprimere errori fastapi di LiteLLM
+# Configura logging per sopprimere errori fastapi di LiteLLM e rumore HTTP
 logging.getLogger("litellm").setLevel(logging.ERROR)
-logging.getLogger("litellm.proxy").setLevel(logging.ERROR)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 from crewai import Agent, Task, Crew, LLM
 from typing import Dict, Tuple, List, Optional
@@ -22,16 +28,26 @@ import json
 # Configure Logger
 logger = logging.getLogger(__name__)
 
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 # Defaults
 DEFAULT_CODER_MODEL = "ollama/qwen2.5-coder:14b"
 DEFAULT_PLANNER_MODEL = "ollama/llama3.1:8b"
-# Read BASE_URL from environment variable or use default
-BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 def get_llm(model_name: str, base_url: str = None) -> LLM:
     """Create an LLM instance with optional base_url override."""
-    url = base_url or BASE_URL
-    return LLM(model=model_name, base_url=url)
+    # Forziamo Ollama a usare una finestra di contesto adeguata fin dall'inizio
+    # e ottimizziamo i parametri per evitare l'offload su CPU se possibile.
+    return LLM(
+        model=model_name, 
+        base_url=base_url,
+        config={
+            "num_ctx": 16384,
+            "temperature": 0.0,
+            "num_thread": 8
+        }
+    )
 
 # Agents
 def create_coder_agent(model_name: str, base_url: str = None) -> Agent:
@@ -97,8 +113,9 @@ def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_co
         "Aider will automatically create files when instructed - you don't 'suggest', you COMMAND creation.\n\n"
         "Produce a JSON object with two keys:\n"
         "1. 'aider_prompt': A detailed instruction for Aider to CREATE and implement the code. "
-        "Be EXPLICIT: 'CREATE app/components/Notification.tsx with...', 'CREATE lib/services/event-monitor.ts that...'. "
-        "Include full file paths and directory structure. Aider will create directories and files automatically. "
+        "Be EXPLICIT and VERBOSE: For EACH file in 'target_files', you MUST provide specific implementation details "
+        "or the actual code structure desired. Do not just say 'create the file', say 'create the file with a React component that...'."
+        "Include full file paths and directory structure. Aider will create directories and files automatically.\n"
         "Reference specific constraints from the Specifications if applicable.\n"
         "2. 'target_files': A list of file paths that need to be CREATED or modified. "
         "Include NEW files that don't exist yet with their full paths (e.g., 'app/components/Notification.tsx', 'lib/services/event-monitor.ts'). "
@@ -111,6 +128,10 @@ def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_co
         expected_output="JSON string with 'aider_prompt' and 'target_files'.",
         agent=coder
     )
+    
+    # Filter non-critical LiteLLM errors (fastapi dependency warnings)
+    litellm_logger = logging.getLogger("litellm")
+    litellm_logger.setLevel(logging.ERROR)
     
     crew = Crew(agents=[coder], tasks=[planning_task], verbose=False)
     result = crew.kickoff()
