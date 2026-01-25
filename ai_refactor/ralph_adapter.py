@@ -1,8 +1,10 @@
 import argparse
-import sys
 import json
 import logging
+import re
+import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -18,55 +20,363 @@ def _save_prd(prd_path: Path, data: Dict[str, Any]) -> None:
     with open(prd_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
-def _pick_next_story(stories: list[dict]) -> Optional[dict]:
+def load_prd(repo_root: Path, feature_id: str, specs_dir: str = "specs") -> Dict[str, Any]:
     """
-    Picks the next story to work on.
-    Priority:
-    1. First 'todo'
-    2. First 'fail' (retry)
-    3. 'in_progress' is treated as 'fail'/retry if we are restarting the loop
-       (usually 'in_progress' shouldn't persist across loop restarts unless it crashed)
+    Loads and validates PRD JSON from the feature directory.
+    Does NOT generate PRD - user must run generator separately.
     
-    Returns None if all are 'pass'.
+    Raises:
+        FileNotFoundError: If prd.json doesn't exist
+        json.JSONDecodeError: If PRD is invalid JSON
+        ValueError: If PRD missing required fields
     """
-    # 1. Look for todo
+    feature_dir = repo_root / specs_dir / feature_id
+    prd_path = feature_dir / "prd.json"
+    
+    if not prd_path.exists():
+        raise FileNotFoundError(
+            f"PRD file not found: {prd_path}\n"
+            f"Please run the PRD generator first:\n"
+            f"  python -m ai_refactor.prd_generator --feature-id {feature_id}"
+        )
+    
+    try:
+        data = json.loads(prd_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(
+            f"Invalid JSON in PRD file {prd_path}: {e.msg}",
+            e.doc,
+            e.pos
+        )
+    
+    # Validate required fields
+    if "stories" not in data:
+        raise ValueError(f"PRD missing required field 'stories' in {prd_path}")
+    if "context" not in data:
+        raise ValueError(f"PRD missing required field 'context' in {prd_path}")
+    
+    logger.info(f"PRD loaded successfully from {prd_path}")
+    return data
+
+def select_next_story(
+    prd: Dict[str, Any],
+    max_attempts_per_story: Optional[int] = None,
+    target_story_id: Optional[str] = None,
+    force: bool = False
+) -> Optional[Dict[str, Any]]:
+    """
+    Priority-aware story selection.
+    
+    Selection priority (highest to lowest):
+    1. Status: todo > in_progress > fail (skip pass unless force=True)
+    2. Priority: P1 > P2 > P3 > P4 > P5
+    3. ID: US1 > US2 > US3 (numeric part)
+    4. Attempts: Lower attempts preferred (for same priority/status)
+    
+    Args:
+        prd: PRD dictionary with stories array
+        max_attempts_per_story: Maximum attempts before marking as exhausted
+        target_story_id: If provided, return this story if eligible
+        force: If True, include stories with status="pass"
+    
+    Returns:
+        Selected story dict or None if no eligible story found
+    """
+    stories = prd.get("stories", [])
+    if not stories:
+        return None
+    
+    # If target_story_id specified, find and return it if eligible
+    if target_story_id:
+        for story in stories:
+            if story.get("id") == target_story_id:
+                # Check if eligible
+                status = story.get("status", "todo")
+                if status == "pass" and not force:
+                    logger.warning(f"Story {target_story_id} has status 'pass'. Use --force to retry.")
+                    return None
+                
+                attempts = story.get("attempts", 0)
+                max_attempts = story.get("max_attempts") or max_attempts_per_story
+                if max_attempts and attempts >= max_attempts:
+                    logger.warning(f"Story {target_story_id} has reached max attempts ({max_attempts})")
+                    return None
+                
+                return story
+        logger.warning(f"Story {target_story_id} not found in PRD")
+        return None
+    
+    # Filter eligible stories
+    eligible = []
     for story in stories:
-        if story.get("status") == "todo":
-            return story
-            
-    # 2. Look for fail or in_progress to retry
-    for story in stories:
-        status = story.get("status")
-        if status in ["fail", "in_progress"]:
-            return story
-            
-    return None
+        status = story.get("status", "todo")
+        
+        # Skip pass unless force
+        if status == "pass" and not force:
+            continue
+        
+        # Check max attempts
+        attempts = story.get("attempts", 0)
+        max_attempts = story.get("max_attempts") or max_attempts_per_story
+        if max_attempts and attempts >= max_attempts:
+            continue
+        
+        eligible.append(story)
+    
+    if not eligible:
+        return None
+    
+    # Sort by selection priority
+    def sort_key(story):
+        status = story.get("status", "todo")
+        priority = story.get("priority", "P9")
+        story_id = story.get("id", "")
+        attempts = story.get("attempts", 0)
+        
+        # Status priority: todo=0, in_progress=1, fail=2, pass=3
+        status_priority = {"todo": 0, "in_progress": 1, "fail": 2, "pass": 3}.get(status, 99)
+        
+        # Priority number: P1=1, P2=2, etc.
+        priority_num = int(priority[1:]) if priority.startswith("P") and priority[1:].isdigit() else 99
+        
+        # Extract numeric part from ID (US1 -> 1, US2 -> 2)
+        id_match = re.match(r"US(\d+)", story_id)
+        id_num = int(id_match.group(1)) if id_match else 9999
+        
+        return (status_priority, priority_num, id_num, attempts)
+    
+    eligible.sort(key=sort_key)
+    selected = eligible[0]
+    
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            f"Selected story {selected['id']} (status={selected.get('status')}, "
+            f"priority={selected.get('priority')}, attempts={selected.get('attempts', 0)})"
+        )
+    
+    return selected
+
+def build_story_context(story: Dict[str, Any], prd: Dict[str, Any]) -> str:
+    """
+    Constructs rich context string from story + PRD context.
+    Combines story description, acceptance_criteria, independent_test
+    and prepends PRD context.full_concatenation for full spec context.
+    
+    Returns formatted context string for agents.
+    """
+    context_parts = []
+    
+    # Add PRD full context first (all spec files)
+    prd_context = prd.get("context", {})
+    full_concatenation = prd_context.get("full_concatenation", "")
+    if full_concatenation:
+        context_parts.append("=== FULL SPECIFICATION CONTEXT ===\n")
+        context_parts.append(full_concatenation)
+        context_parts.append("\n")
+    
+    # Add story-specific context
+    context_parts.append("=== CURRENT USER STORY ===\n")
+    context_parts.append(f"Story ID: {story.get('id', 'N/A')}\n")
+    context_parts.append(f"Title: {story.get('title', 'N/A')}\n")
+    context_parts.append(f"Priority: {story.get('priority', 'N/A')}\n")
+    context_parts.append(f"\nDescription:\n{story.get('description', 'N/A')}\n")
+    
+    # Add acceptance criteria
+    acceptance_criteria = story.get("acceptance_criteria", [])
+    if acceptance_criteria:
+        context_parts.append("\nAcceptance Criteria:\n")
+        for ac in acceptance_criteria:
+            context_parts.append(f"- {ac}\n")
+    
+    # Add independent test
+    independent_test = story.get("independent_test", "")
+    if independent_test:
+        context_parts.append(f"\nIndependent Test:\n{independent_test}\n")
+    
+    # Add linked tasks (for reference)
+    tasks = story.get("tasks", [])
+    if tasks:
+        context_parts.append(f"\nLinked Implementation Tasks: {', '.join(tasks)}\n")
+    else:
+        context_parts.append("\n(No linked tasks - story context only)\n")
+    
+    return "".join(context_parts)
+
+def update_story_after_attempt(
+    story: Dict[str, Any],
+    result: Dict[str, Any],
+    max_attempts: Optional[int] = None
+) -> None:
+    """
+    Updates story state based on implementation result.
+    Sets status (pass/in_progress/fail), increments attempts,
+    sets last_error (or clears it on success), sets last_updated_at timestamp.
+    Marks as fail if max_attempts exceeded.
+    """
+    story["attempts"] = story.get("attempts", 0) + 1
+    story["last_updated_at"] = datetime.utcnow().isoformat() + "Z"
+    
+    # Check if successful
+    if result.get("decision") == "SHIP" and result.get("tests_ok", False):
+        story["status"] = "pass"
+        story["last_error"] = None
+        logger.info(f"Story {story.get('id')} PASSED (attempt {story['attempts']})")
+    else:
+        # Determine error message
+        error_msg = result.get("error")
+        if not error_msg:
+            if result.get("decision") != "SHIP":
+                error_msg = f"Agent decision: {result.get('decision', 'UNKNOWN')}"
+            elif not result.get("tests_ok", True):
+                error_msg = "Tests failed"
+            else:
+                error_msg = "Unknown error"
+        
+        story["last_error"] = error_msg
+        
+        # Check if max attempts reached
+        if max_attempts and story["attempts"] >= max_attempts:
+            story["status"] = "fail"
+            logger.warning(
+                f"Story {story.get('id')} reached max attempts ({max_attempts}), "
+                f"marking as fail. Last error: {error_msg}"
+            )
+        else:
+            story["status"] = "in_progress"
+            logger.info(
+                f"Story {story.get('id')} needs revision (attempt {story['attempts']}). "
+                f"Error: {error_msg}"
+            )
+
+def run_ralph_iteration(
+    repo_root: Path,
+    prd: Dict[str, Any],
+    prd_path: Path,
+    story: Dict[str, Any],
+    use_agents: bool,
+    auto_commit: bool,
+    skip_tests: bool,
+    verbose: bool,
+    max_attempts_per_story: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Executes single iteration for one story.
+    Updates story to in_progress, saves PRD, builds story context,
+    calls run_once(), updates story state based on result, saves PRD.
+    
+    Returns iteration result dict.
+    """
+    feature_id = prd.get("feature_id", "unknown")
+    story_id = story.get("id", "unknown")
+    
+    # Update story to in_progress and increment attempts
+    story["status"] = "in_progress"
+    story["attempts"] = story.get("attempts", 0) + 1
+    story["last_updated_at"] = datetime.utcnow().isoformat() + "Z"
+    
+    # Save PRD state before execution
+    _save_prd(prd_path, prd)
+    logger.info(f"Story {story_id} marked as in_progress (attempt {story['attempts']})")
+    
+    # Build story context
+    story_context = build_story_context(story, prd)
+    
+    # Check if story has no linked tasks (informational)
+    tasks = story.get("tasks", [])
+    if not tasks:
+        logger.info(f"Story {story_id} has no linked tasks, proceeding with story context only")
+    
+    # Construct task name
+    task_name = f"{feature_id}-{story_id}-{story.get('title', 'story')}"
+    # Sanitize task name for branch creation
+    task_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in task_name)
+    
+    if verbose:
+        logger.debug(f"Task name: {task_name}")
+        logger.debug(f"Story context length: {len(story_context)} characters")
+    
+    # Execute run_once with story context
+    try:
+        result = run_once(
+            task_name=task_name,
+            repo_root=repo_root,
+            use_agents=use_agents,
+            auto_commit=auto_commit,
+            prompt=None,  # Let agents generate prompt from context
+            skip_tests=skip_tests,
+            verbose=verbose,
+            story_context=story_context,  # Pass story context
+        )
+    except Exception as e:
+        logger.error(f"Exception during run_once for story {story_id}: {e}", exc_info=verbose)
+        result = {
+            "decision": "ERROR",
+            "tests_ok": False,
+            "error": f"Exception: {str(e)}"
+        }
+    
+    # Update story state based on result
+    max_attempts = story.get("max_attempts") or max_attempts_per_story
+    update_story_after_attempt(story, result, max_attempts)
+    
+    # Save PRD state after execution
+    try:
+        _save_prd(prd_path, prd)
+    except Exception as e:
+        logger.error(f"Failed to save PRD after iteration: {e}")
+        # Continue anyway - state is in memory
+    
+    return {
+        "story_id": story_id,
+        "story_title": story.get("title"),
+        "attempt": story["attempts"],
+        "result": result,
+        "status": story["status"]
+    }
 
 def run_ralph_loop(
     repo_root: Path,
     feature_id: str,
+    mode: str = "loop",
     max_iterations: Optional[int] = None,
+    max_attempts_per_story: Optional[int] = None,
+    target_story_id: Optional[str] = None,
     auto_commit: bool = False,
     skip_tests: bool = False,
     use_agents: bool = True,
     verbose: bool = False,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """
-    Executes the Ralph-style autonomous loop:
-    1. Generates/Updates PRD from Spec Kit.
-    2. Iterates through stories until done or max_iterations reached.
-    """
+    Executes the Ralph-style autonomous loop.
     
-    # 0. Load Config & Generate PRD
+    Args:
+        repo_root: Repository root path
+        feature_id: Feature identifier (e.g., "001-event-notifications")
+        mode: Execution mode - "once" for single iteration, "loop" for full loop
+        max_iterations: Maximum loop iterations (None = no limit)
+        max_attempts_per_story: Maximum attempts per story before marking as fail
+        target_story_id: Target specific story (e.g., "US1")
+        auto_commit: Automatically commit when SHIP + tests_ok
+        skip_tests: Skip running tests
+        use_agents: Use CrewAI agents for planning/review
+        verbose: Enable verbose logging
+        force: Retry stories with status="pass"
+    
+    Returns:
+        Summary dict with feature_id, iterations, stories_total, stories_pass, stories_fail
+    """
+    # Load config and PRD (do NOT generate - user must run generator separately)
     try:
         config = load_config(repo_root)
         specs_dir = config.spec_kit.get("specs_dir", "specs") if config.spec_kit else "specs"
         
-        logger.info(f"Generating/Updating PRD for feature '{feature_id}'...")
-        prd_path = generate_prd(repo_root, feature_id, specs_dir=specs_dir)
-        logger.info(f"PRD ready at {prd_path}")
+        logger.info(f"Loading PRD for feature '{feature_id}'...")
+        prd = load_prd(repo_root, feature_id, specs_dir=specs_dir)
         
-        data = json.loads(prd_path.read_text(encoding="utf-8"))
+        feature_dir = repo_root / specs_dir / feature_id
+        prd_path = feature_dir / "prd.json"
+        
     except Exception as e:
         logger.error(f"Failed to initialize Ralph loop: {e}")
         return {
@@ -77,7 +387,14 @@ def run_ralph_loop(
             "stories_fail": 0,
             "iterations": 0
         }
-
+    
+    # Update ralph_metadata
+    if "ralph_metadata" not in prd:
+        prd["ralph_metadata"] = {}
+    prd["ralph_metadata"]["last_run_at"] = datetime.utcnow().isoformat() + "Z"
+    prd["ralph_metadata"]["last_run_mode"] = mode
+    prd["ralph_metadata"]["total_iterations"] = prd["ralph_metadata"].get("total_iterations", 0)
+    
     iterations = 0
     
     while True:
@@ -85,106 +402,64 @@ def run_ralph_loop(
         if max_iterations is not None and iterations >= max_iterations:
             logger.info(f"Reached maximum iterations ({max_iterations}). Stopping.")
             break
-
-        # Pick next story
-        story = _pick_next_story(data["stories"])
-        if story is None:
-            logger.info("All stories passed! Loop complete.")
-            break
-            
-        logger.info(f"--- Iteration {iterations + 1} ---")
-        logger.info(f"Selected story: {story['id']} - {story['title']}")
         
-        # Update status to in_progress
-        story["status"] = "in_progress"
-        story["attempts"] = story.get("attempts", 0) + 1
-        _save_prd(prd_path, data)
-        
-        # Construct task name & context
-        # We pass story context into the prompt indirectly via run_once if needed, 
-        # but run_once currently generates the prompt via agents.
-        # We can pass the specifics as the prompt to run_once to bypass planning if we want,
-        # OR we let run_once do the planning.
-        # Given the instructions say "use models via Ollama", we probably rely on run_once's Planning phase (using agents=True).
-        # But we should give it a good task_name that helps the planner.
-        
-        task_name = f"{feature_id}-{story['id']}-{story['title']}"
-        # Sanitize task name for branch creation if needed
-        task_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in task_name)
-        
-        # We might want to construct a specific prompt instruction to guide the agent better
-        # using the story description and acceptance criteria.
-        prompt_context = f"""Feature: {data['title']}
-Story: {story['title']}
-Description: {story['description']}
-Acceptance Criteria:
-"""
-        for ac in story.get("acceptance_criteria", []):
-            prompt_context += f"- {ac}\n"
-            
-        # Execute run_once
-        result = run_once(
-            task_name=task_name,
-            repo_root=repo_root,
-            use_agents=use_agents,
-            auto_commit=auto_commit,
-            # We pass the constructed context as the 'prompt' description for the planner 
-            # if we wanted to enforce it, OR we let the planner discover it.
-            # However, run_once with prompt=None uses 'task_name' to prompt the planner.
-            # To capture the full story details, providing a 'prompt' argument to run_once 
-            # (which skips the planner usually, OR serves as input to the planner if modified)
-            # workflow.py: if prompt is provided, it skips Plan phase (crew_agents.coder_plan).
-            # The user requirement says: "usa modelli locali... workflow esistente...". 
-            # If we pass 'prompt', workflow.py skips the 'Plan' agent phase and goes straight to Aider.
-            # But the requirement says "Phase Plan: uses crew_agents.coder_plan...".
-            # So if we want to use the Planner Agent, we MUST NOT pass `prompt`. 
-            # BUT we need to pass the Story details to the Planner Agent.
-            # workflow.py `coder_plan` takes `task_name` and `user_request` (hardcoded "User requested refactor" in workflow.py currently).
-            # To make this work without changing workflow.py too much, we might need to rely on the fact that
-            # `coder_plan` receives `spec_context`. 
-            # SINCE we updated `generate_prd`, the specs ARE in the specs folder.
-            # `load_specs` will load ALL specs. 
-            # The Planner Agent should ideally see the `tasks.md` or `prd.json` if included in context.
-            # Let's hope `workflow.run_once` logic is sufficient. 
-            # Limitation: currently `workflow.run_once` passes "User requested refactor." as the user_request to coder_plan.
-            # We might want to patch `workflow.run_once` later to accept a `user_request` string,
-            # but for now we follow instructions to "Modify implementation of AI Refactor Tool... using workflow existing...".
-            # We will use `task_name` effectively to convey intent.
-            prompt=None, 
-            skip_tests=skip_tests,
-            verbose=verbose,
+        # Select next story
+        story = select_next_story(
+            prd,
+            max_attempts_per_story=max_attempts_per_story,
+            target_story_id=target_story_id,
+            force=force
         )
         
-        # Evaluate result
-        if result["decision"] == "SHIP" and result["tests_ok"]:
-            logger.info(f"Story {story['id']} PASSED.")
-            story["status"] = "pass"
-            story["last_error"] = None
-        else:
-            logger.warning(f"Story {story['id']} FAILED / REVISE.")
-            story["status"] = "fail"
-            error_msg = result.get("error")
-            if not error_msg and result["decision"] != "SHIP":
-                error_msg = f"Agent decision: {result['decision']}"
-            elif not error_msg and not result["tests_ok"]:
-                error_msg = "Tests failed"
-            
-            story["last_error"] = error_msg
-
-        _save_prd(prd_path, data)
-        iterations += 1
+        if story is None:
+            logger.info("No eligible stories found. Loop complete.")
+            break
         
-        # Basic sleep to prevent tight loops if something goes wrong instantly
+        logger.info(f"--- Iteration {iterations + 1} ---")
+        logger.info(f"Selected story: {story['id']} - {story.get('title', 'N/A')}")
+        
+        # Execute iteration
+        iteration_result = run_ralph_iteration(
+            repo_root=repo_root,
+            prd=prd,
+            prd_path=prd_path,
+            story=story,
+            use_agents=use_agents,
+            auto_commit=auto_commit,
+            skip_tests=skip_tests,
+            verbose=verbose,
+            max_attempts_per_story=max_attempts_per_story
+        )
+        
+        iterations += 1
+        prd["ralph_metadata"]["total_iterations"] = iterations
+        
+        # If single iteration mode, exit after one iteration
+        if mode == "once":
+            logger.info("Single iteration mode - exiting after one iteration")
+            break
+        
+        # Basic sleep to prevent tight loops
         time.sleep(1)
-
+    
     # Calculate summary
+    stories = prd.get("stories", [])
     summary = {
         "feature_id": feature_id,
         "iterations": iterations,
-        "stories_total": len(data["stories"]),
-        "stories_pass": sum(1 for s in data["stories"] if s["status"] == "pass"),
-        "stories_fail": sum(1 for s in data["stories"] if s["status"] == "fail"),
+        "stories_total": len(stories),
+        "stories_pass": sum(1 for s in stories if s.get("status") == "pass"),
+        "stories_fail": sum(1 for s in stories if s.get("status") == "fail"),
+        "stories_todo": sum(1 for s in stories if s.get("status") == "todo"),
+        "stories_in_progress": sum(1 for s in stories if s.get("status") == "in_progress"),
     }
+    
+    # Final save of PRD with updated metadata
+    try:
+        _save_prd(prd_path, prd)
+    except Exception as e:
+        logger.error(f"Failed to save PRD at end of loop: {e}")
+    
     return summary
 
 def main():
@@ -195,9 +470,29 @@ def main():
         help="Spec Kit feature id (e.g. 001-ui-theme)",
     )
     parser.add_argument(
+        "--mode",
+        choices=["once", "loop"],
+        default="once",
+        help="Execution mode: 'once' for single iteration, 'loop' for full loop (default: once)",
+    )
+    parser.add_argument(
         "--max-iterations",
         type=int,
         help="Maximum number of loop iterations (optional)",
+    )
+    parser.add_argument(
+        "--max-attempts-per-story",
+        type=int,
+        help="Maximum attempts per story before marking as fail (optional)",
+    )
+    parser.add_argument(
+        "--story-id",
+        help="Target specific story (e.g. US1) - only works in 'once' mode",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Retry stories with status='pass'",
     )
     parser.add_argument(
         "--auto-commit",
@@ -223,6 +518,11 @@ def main():
 
     args = parser.parse_args()
 
+    # Validate arguments
+    if args.story_id and args.mode == "loop":
+        print("Error: --story-id can only be used with --mode once")
+        sys.exit(1)
+
     # Configure logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -233,16 +533,20 @@ def main():
         print(f"Error: {e}")
         sys.exit(1)
 
-    print(f"Starting Ralph Loop for feature: {args.feature_id}")
+    print(f"Starting Ralph Loop for feature: {args.feature_id} (mode: {args.mode})")
 
     result = run_ralph_loop(
         repo_root=repo_root,
         feature_id=args.feature_id,
+        mode=args.mode,
         max_iterations=args.max_iterations,
+        max_attempts_per_story=args.max_attempts_per_story,
+        target_story_id=args.story_id,
         auto_commit=args.auto_commit,
         skip_tests=args.no_tests,
         use_agents=not args.no_agents,
         verbose=args.verbose,
+        force=args.force,
     )
 
     print("\n--- Ralph Loop Summary ---")
@@ -251,6 +555,10 @@ def main():
     print(f"Stories total: {result['stories_total']}")
     print(f"Stories pass:  {result['stories_pass']}")
     print(f"Stories fail:  {result['stories_fail']}")
+    if 'stories_todo' in result:
+        print(f"Stories todo: {result['stories_todo']}")
+    if 'stories_in_progress' in result:
+        print(f"Stories in_progress: {result['stories_in_progress']}")
 
     if result.get("error"):
          print(f"Error occurred: {result['error']}")

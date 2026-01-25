@@ -40,6 +40,23 @@ def run_tests(test_command: str, cwd: Path) -> tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
+def enhance_spec_context_with_story(spec_context: str, story_context: str) -> str:
+    """
+    Prepends story-specific context to existing spec context.
+    Formats story context as a clear section.
+    Returns combined context string.
+    """
+    if not story_context:
+        return spec_context
+    
+    # Format story context as a clear section at the beginning
+    enhanced = "=== STORY-SPECIFIC CONTEXT ===\n"
+    enhanced += story_context
+    enhanced += "\n\n=== GENERAL SPECIFICATION CONTEXT ===\n"
+    enhanced += spec_context if spec_context else "(No general spec context available)"
+    
+    return enhanced
+
 def run_once(
     task_name: str, 
     repo_root: Path,
@@ -47,7 +64,8 @@ def run_once(
     auto_commit: bool = False,
     prompt: Optional[str] = None,
     skip_tests: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
+    story_context: Optional[str] = None
 ) -> Dict[str, Any]:
     
     try:
@@ -75,6 +93,12 @@ def run_once(
         if verbose:
             logger.debug(f"Exception details: {e}", exc_info=True)
         spec_context = ""
+    
+    # Enhance spec context with story context if provided
+    if story_context:
+        spec_context = enhance_spec_context_with_story(spec_context, story_context)
+        if verbose:
+            logger.debug(f"Enhanced context with story context (total length: {len(spec_context)} characters)")
     
     # 1. Plan (CrewAI) -> Prompt & Files
     aider_prompt = prompt

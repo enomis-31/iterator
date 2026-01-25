@@ -449,6 +449,10 @@ def generate_prd(
     prd_data["title"] = feature_title
     prd_data["description"] = feature_description
     
+    # Preserve ralph_metadata if it exists (loop-managed)
+    if "ralph_metadata" not in prd_data:
+        prd_data["ralph_metadata"] = {}
+    
     # SAVE THE RICH CONTEXT
     prd_data["context"] = spec_context
 
@@ -480,7 +484,7 @@ def generate_prd(
             ac = [f"Verify {user_story.title}"]
 
         if existing:
-            # Update fields but preserve status, attempts, last_error
+            # Update fields from spec.md but preserve loop-managed fields
             existing["title"] = user_story.title
             existing["description"] = user_story.description
             existing["priority"] = user_story.priority
@@ -488,7 +492,12 @@ def generate_prd(
             existing["independent_test"] = user_story.independent_test
             if linked_task_ids:
                 existing["tasks"] = linked_task_ids
-            # Preserve status, attempts, last_error
+            
+            # Preserve loop-managed fields: status, attempts, last_error, last_updated_at, max_attempts
+            # These are only set/updated by the Ralph loop, not by the PRD generator
+            # (status, attempts, last_error are already preserved by not overwriting)
+            # last_updated_at and max_attempts are also preserved if they exist
+            
             merged_stories.append(existing)
             del existing_stories_map[user_story.id]
         else:
