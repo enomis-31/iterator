@@ -234,9 +234,9 @@ def run_once(
                 if existing_files:
                     logger.info(f"Planner suggested {len(existing_files)} existing files to modify: {', '.join(existing_files[:3])}{'...' if len(existing_files) > 3 else ''}")
                 
-                target_files = target_files_filtered
+                target_files = list(dict.fromkeys(target_files_filtered))
                 if verbose:
-                    logger.debug(f"Target files (after validation): {target_files}")
+                    logger.debug(f"Target files (after validation and deduplication): {target_files}")
                 
                 # Se non ci sono file di codice suggeriti, avvisa ma non blocca (potrebbe essere creazione iniziale)
                 if not target_files:
@@ -255,9 +255,16 @@ def run_once(
         aider_prompt = task_name # Fallback if agent failed or no prompt provided
     
     # 2. Code (Aider)
-    # IMPORTANTE: Aider può creare nuovi file automaticamente quando il prompt lo richiede.
-    # Non blocchiamo se target_files è vuoto - Aider creerà i file necessari basandosi sul prompt.
+    # Get initial diff to isolate what Aider does
+    try:
+        initial_diff = get_diff(repo_root, base_ref="") # Unstaged changes before Aider
+    except:
+        initial_diff = ""
+
     log_phase("CODE", verbose)
+    if aider_prompt == task_name:
+        logger.warning("PLANNER FAILED: Falling back to task name as prompt. Aider might not have enough detail.")
+    
     logger.info(f"Starting Aider with prompt: {aider_prompt[:100]}..." if len(aider_prompt) > 100 else f"Starting Aider with prompt: {aider_prompt}")
     if target_files:
         # Verifica quali file esistono e quali devono essere creati
@@ -317,7 +324,30 @@ def run_once(
                     "tests_ok": False,
                     "error": "Aider command not found. Please install it via 'pipx install aider-chat'."
                 }
-            logger.warning(f"Aider exited with code {aider_exit_code}. Continuing anyway...")
+            logger.warning(f"Aider exited with code {aider_exit_code}. Continuing to check for changes...")
+            
+        # Get final diff and compare
+        try:
+            # We want ONLY what changed during this Aider run. 
+            # Aider auto-commits by default unless --no-auto-commits is used.
+            # Our aider_bridge uses --no-auto-commits, so changes are in working tree (staged or unstaged).
+            # We compare the total diff (HEAD vs working tree) before and after.
+            current_diff = get_diff(repo_root, base_ref="HEAD")
+            
+            if current_diff == initial_diff:
+                logger.warning("No changes detected after Aider run. Aider might have failed to apply edits.")
+                return {"decision": "NO_CHANGES", "tests_ok": False, "error": "Aider did not modify any files."}
+            
+            # Isolate the diff for the Critic
+            # This is an approximation: we pass the current diff from HEAD.
+            # If the user had 100k diff before, it's still there.
+            # TODO: In a more robust implementation, we would stash existing changes before Aider.
+            diff = current_diff
+            
+        except Exception as e:
+            logger.error(f"Failed to calculate diff: {e}")
+            diff = ""
+
     except Exception as e:
         logger.error(f"Failed to run Aider: {e}")
         # Not showing full traceback in console unless verbose
@@ -351,22 +381,8 @@ def run_once(
             tests_ok, test_log = False, f"Test execution failed: {e}"
     
     # 4. Review (CrewAI)
-    try:
-        # Get diff of staged changes (what Aider just did and added to index)
-        # base_ref="HEAD" will show staged + unstaged changes relative to last commit
-        diff = get_diff(repo_root, base_ref="HEAD")
-        
-        if verbose:
-            logger.debug(f"Git diff size: {len(diff)} characters")
-    except Exception as e:
-        logger.error(f"Failed to get git diff: {e}")
-        if verbose:
-            logger.debug(f"Exception details: {e}", exc_info=True)
-        return {
-            "decision": "ERROR",
-            "tests_ok": tests_ok,
-            "error": f"Failed to get git diff: {e}"
-        }
+    if verbose:
+        logger.debug(f"Git diff size for Critic: {len(diff)} characters")
     
     if not diff:
         logger.info("No changes detected.")

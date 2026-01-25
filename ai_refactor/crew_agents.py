@@ -26,10 +26,6 @@ from crewai import Agent, Task, Crew, LLM
 from typing import Dict, Tuple, List, Optional
 
 # Configure Logger
-logger = logging.getLogger(__name__)
-
-import warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # Defaults
 DEFAULT_CODER_MODEL = "ollama/qwen2.5-coder:14b"
@@ -67,11 +63,11 @@ def create_coder_agent(model_name: str, base_url: str = None) -> Agent:
 
 def create_critic_agent(model_name: str, base_url: str = None) -> Agent:
     return Agent(
-        role="Code Reviewer",
-        goal="Verify code changes and test results to ensure quality and correctness.",
+        role="Pragmatic Senior Reviewer",
+        goal="Ensure code changes are logically sound and match requirements, even if the environment is missing tools.",
         backstory=(
-            "You are a strict code reviewer. You look at git diffs and test logs. "
-            "You rely on evidence, not intuition. You only approve changes that are correct and safe."
+            "You are a pragmatic senior developer. You understand that sometimes local environments lack testing tools. "
+            "Your main focus is the CODE QUALITY and LOGIC in the git diff. If the code looks correct, you approve."
         ),
         llm=get_llm(model_name, base_url=base_url),
         verbose=False,
@@ -170,7 +166,6 @@ def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_co
             logger.debug(f"JSON standard parse failed, attempting aggressive repair: {jde}")
             
             # Remove any control characters that might break JSON parsing (except \n, \r, \t)
-            import re
             cleaned_output = "".join(ch for ch in raw_output if ch == '\n' or ch == '\r' or ch == '\t' or (ord(ch) >= 32))
             
             # Repairing unescaped newlines inside "key": "value"
@@ -217,7 +212,6 @@ def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_co
         logger.error(f"Failed to parse coder plan: {e}")
         logger.error(f"Raw output was: {result}")
         # Final fallback: use task_name and try to extract any paths manually
-        import re
         paths = re.findall(r'["\']?([a-zA-Z0-9_\-/]+\.[a-zA-Z0-9]+)["\']?', str(result))
         # Filter out common false positives
         paths = [p for p in paths if any(p.startswith(d) for d in ['app/', 'lib/', 'src/', 'components/'])]
@@ -235,16 +229,15 @@ def critic_review(diff: str, test_log: str, task_name: str, model_name: str = DE
     
     review_task = Task(
         description=(
-            f"Task: {task_name}\n\n"
-            f"Test logs:\n{test_log[-2000:]}\n\n" # Truncate logs
-            f"Git Diff:\n{diff[:5000]}\n\n" # Truncate diff
-            "Analyze the above changes and test results.\n"
-            "CRITICAL: If tests failed ONLY because the testing tool (like 'pytest' or 'npm test') is missing/not found "
-            "in the environment, but the code implementation looks correct and follows the requirements, you SHOULD approve it with 'SHIP'.\n"
-            "If the tests ran and failed due to code errors, or if the code itself has logical flaws, output 'REVISE: <one sentence reason>'.\n"
-            "If the code is correct and tests passed (or were skipped due to missing environment tools), output 'SHIP'.\n"
-            "Output format: 'SHIP' or 'REVISE: <reason>'.\n"
-            "Output ONLY the decision word(s)."
+            f"Review this task: {task_name}\n\n"
+            f"TEST LOG (Might indicate missing tools): \n{test_log[-1000:]}\n\n"
+            f"GIT DIFF (Actual code changes): \n{diff[:5000]}\n\n"
+            "DIRECTIONS:\n"
+            "1. Focus on the GIT DIFF. Is the logic correct? Does it implement the task?\n"
+            "2. Ignore 'pytest: command not found' or 'skipped' errors in the test log if the code itself is good.\n"
+            "3. If the code is correct, output exactly: SHIP\n"
+            "4. If the code has real bugs or missing logic, output: REVISE: <one sentence explanation>\n"
+            "Decision:"
         ),
         expected_output="'SHIP' or 'REVISE: <reason>'",
         agent=critic

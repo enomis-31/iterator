@@ -99,8 +99,7 @@ def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None,
         "--yes-always",
         "--no-pretty",     
         "--map-tokens", "0",
-        "--git", # Force git detection
-        "--ctx-size", "8192" # Limit context to ensure GPU allocation
+        "--git" # Force git detection
     ])
     
     if config_path and config_path.exists():
