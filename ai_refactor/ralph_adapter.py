@@ -596,7 +596,7 @@ def main():
         sys.exit(1)
 
     # Configure logging
-    log_level = logging.DEBUG if args.verbose else logging.INFO
+    log_level = logging.DEBUG if args.verbose else logging.WARNING
     logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     try:
@@ -605,7 +605,7 @@ def main():
         print(f"Error: {e}")
         sys.exit(1)
 
-    print(f"Starting Ralph Loop for feature: {args.feature_id} (mode: {args.mode})")
+    logger.info(f"Starting Ralph Loop for feature: {args.feature_id} (mode: {args.mode})")
 
     result = run_ralph_loop(
         repo_root=repo_root,

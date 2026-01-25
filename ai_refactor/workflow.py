@@ -51,11 +51,12 @@ def run_tests(test_command: str, cwd: Path) -> tuple[bool, str]:
 
 def log_phase(phase_name: str, verbose: bool = False):
     """Print visual separator for workflow phase"""
-    logger.info("=" * 80)
-    logger.info(f"PHASE: {phase_name}")
-    logger.info("=" * 80)
     if verbose:
-        logger.debug(f"Starting {phase_name} phase...")
+        logger.info("=" * 80)
+        logger.info(f"PHASE: {phase_name}")
+        logger.info("=" * 80)
+    else:
+        logger.debug(f"PHASE: {phase_name}")
 
 def enhance_spec_context_with_story(spec_context: str, story_context: str) -> str:
     """

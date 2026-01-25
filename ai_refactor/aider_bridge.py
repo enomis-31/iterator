@@ -3,169 +3,201 @@ import shlex
 import os
 import re
 import logging
+import time
+import signal
+import fcntl
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
+from datetime import datetime
+import urllib.request
+import json
 
 logger = logging.getLogger(__name__)
 
 def extract_aider_summary(output: str) -> str:
-    """Extract concise summary from Aider output"""
-    # Pattern 1: Cerca "Modified X files" o simili
+    """
+    Extract concise summary from Aider output.
+    Looks for file modifications and errors.
+    """
+    # Pattern 1: Look for "Modified X files" or similar
     modified_match = re.search(r'Modified\s+(\d+)\s+files?', output, re.IGNORECASE)
     if modified_match:
         count = modified_match.group(1)
-        # Cerca nomi file modificati
-        file_paths = re.findall(r'(app|lib|src|components|pages|routes)/[^\s\n]+\.(?:ts|tsx|js|jsx|py)', output)
-        unique_files = list(set(file_paths))[:5]
+        # Try to find specific modified files in the output
+        file_paths = re.findall(r'(?:^|\s)((?:app|lib|src|components|pages|routes|tests)/[^\s\n]+\.(?:ts|tsx|js|jsx|py))', output, re.MULTILINE)
+        unique_files = list(dict.fromkeys(file_paths))[:5]
         if unique_files:
             return f"Modified {count} files: {', '.join(unique_files[:3])}{'...' if len(unique_files) > 3 else ''}"
         return f"Modified {count} files"
     
-    # Pattern 2: Cerca file menzionati nel diff
+    # Pattern 2: Look for diff lines
     diff_files = set()
     for line in output.split('\n'):
-        # Cerca linee diff che indicano file modificati
         if line.startswith('diff --git') or line.startswith('+++') or line.startswith('---'):
-            match = re.search(r'[ab]/(app|lib|src|components|pages|routes)/([^\s]+)', line)
+            match = re.search(r'[ab]/((?:app|lib|src|components|pages|routes|tests)/[^\s]+)', line)
             if match:
-                diff_files.add(f"{match.group(1)}/{match.group(2)}")
+                diff_files.add(match.group(1))
     
     if diff_files:
         file_list = list(diff_files)[:5]
         return f"Modified {len(diff_files)} files: {', '.join(file_list[:3])}{'...' if len(file_list) > 3 else ''}"
     
-    # Pattern 3: Cerca file menzionati nel contesto
-    code_files = set()
-    for line in output.split('\n'):
-        match = re.search(r'(app|lib|src|components|pages|routes)/[^\s\n]+\.(?:ts|tsx|js|jsx|py)', line)
-        if match and not any(line.strip().startswith(p) for p in ['+', '-', '@@', 'diff']):
-            code_files.add(match.group(0))
-    
-    if code_files:
-        file_list = list(code_files)[:5]
-        return f"Processed {len(code_files)} files: {', '.join(file_list[:3])}{'...' if len(file_list) > 3 else ''}"
-    
-    return "No code files modified (check if target_files were correct)"
+    return "No code files modified (check if prompt was clear or model responded)"
 
-def filter_aider_stderr(stderr: str) -> str:
-    """Filter non-critical stderr messages"""
-    lines = stderr.split('\n')
-    filtered = []
-    for line in lines:
-        # Filtra warning non critici
-        if any(skip in line.lower() for skip in ['warning:', 'deprecated', 'suggestion']):
-            continue
-        filtered.append(line)
-    return '\n'.join(filtered)
+def check_ollama_connection(base_url: str, model: str) -> bool:
+    """
+    Verifies that Ollama is reachable and the model exists.
+    Returns True if OK, False otherwise.
+    """
+    try:
+        url = f"{base_url}/api/tags"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=5) as response:
+            if response.status != 200:
+                logger.error(f"Ollama returned status {response.status}")
+                return False
+            
+            data = json.loads(response.read().decode())
+            models = [m['name'] for m in data.get('models', [])]
+            clean_model = model.split('/')[-1] if '/' in model else model
+            if not any(m.startswith(clean_model) for m in models):
+                logger.warning(f"Model '{model}' not found in Ollama. Available: {', '.join(models[:5])}...")
+        return True
+    except Exception as e:
+        logger.error(f"Ollama connection check failed: {e}")
+        return False
+
+def make_async(fd):
+    """Make a file descriptor non-blocking."""
+    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
 def run_aider(prompt: str, repo_root: Path, files: Optional[List[str]] = None, config_path: Optional[Path] = None, 
               model: Optional[str] = None, ollama_base_url: Optional[str] = None) -> int:
     """
-    Runs Aider in single-message mode.
-    
-    Args:
-        prompt: The prompt to send to Aider
-        repo_root: Root directory of the repository
-        files: Optional list of files to include
-        config_path: Optional path to Aider config file (if not provided, looks for ~/.aider.conf.yml)
-        model: Optional model name (e.g., "ollama/qwen2.5-coder:14b")
-        ollama_base_url: Optional Ollama base URL (e.g., "http://192.168.1.4:11434")
-    
-    Note:
-        Aider configuration priority:
-        1. config_path parameter (if provided)
-        2. ~/.aider.conf.yml (user config, if exists)
-        3. Environment variables (OLLAMA_API_BASE, OPENAI_API_BASE, etc.)
-        4. Command-line flags (--model, etc.)
+    Runs Aider with reactive status updates and full logging.
     """
-    # Build command with non-interactive flags
-    # Note: We DO NOT use --no-git because Aider uses git to understand code context, see diffs, and track changes. Git is essential!
-    # --no-auto-commits: Don't auto-commit (we handle commits in workflow.py) (we handle commits in workflow.py)
-    # --no-show-model-warnings: Suppress model warnings
+    if model and ollama_base_url:
+        if not check_ollama_connection(ollama_base_url, model):
+            logger.error("Ollama connection check failed. Aborting Aider run.")
+            return 1
+            
     cmd = ["aider", "--no-auto-commits", "--no-show-model-warnings", "--message", prompt]
-    
-    # Look for Aider config file if not explicitly provided
-    if not config_path:
-        # Check for user config file
-        user_config = Path.home() / ".aider.conf.yml"
-        if user_config.exists():
-            config_path = user_config
+    cmd.extend([
+        "--no-suggest-shell-commands", 
+        "--no-analytics",
+        "--yes-always",
+        "--no-pretty",     
+        "--map-tokens", "0" 
+    ])
     
     if config_path and config_path.exists():
         cmd.extend(["--config", str(config_path)])
-        logger.info(f"Using Aider config: {config_path}")
-    
-    # Configure Aider to use Ollama if model and base_url are provided
-    env = os.environ.copy()
-    
-    # Disable interactive prompts
-    env["AIDER_NO_ANALYTICS"] = "1"
-    env["AIDER_SKIP_GITIGNORE"] = "1"
-    
     if model:
-        if ollama_base_url:
-            # Aider needs OLLAMA_API_BASE for Ollama models
-            env["OLLAMA_API_BASE"] = ollama_base_url
-            # Also set OpenAI-compatible endpoint (some Aider versions use this)
-            api_base = f"{ollama_base_url}/v1"
-            env["OPENAI_API_BASE"] = api_base
-            env["OPENAI_API_KEY"] = "ollama"  # Ollama doesn't require a real key
-            logger.info(f"Configured Ollama endpoint: {ollama_base_url}")
-        # Set model via command line (Aider supports --model flag)
-        # Keep full format "ollama/model" for LiteLLM to recognize provider
         cmd.extend(["--model", model])
-        logger.info(f"Using model: {model}")
-    
     if files:
-        # Resolve files relative to repo_root
         cmd.extend(files)
         
-    logger.debug(f"Running Aider with command: {' '.join(shlex.quote(c) for c in cmd)}")
+    env = os.environ.copy()
+    if ollama_base_url:
+        env["OLLAMA_API_BASE"] = ollama_base_url
+        env["OPENAI_API_BASE"] = f"{ollama_base_url}/v1"
+        env["OPENAI_API_KEY"] = "ollama"
+
+    debug_dir = repo_root / "specs"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    log_file_path = debug_dir / "aider.log"
     
+    # Save prompt
+    (debug_dir / "last_aider_prompt.md").write_text(prompt, encoding="utf-8")
+
+    logger.debug(f"Starting coding task...")
+    logger.debug(f"Log file: {log_file_path}")
+    
+    full_output = []
+    process = None
     try:
-        # Run Aider non-interactively with automatic responses to prompts
-        # Responses: n (no analytics), n (no gitignore), d (don't ask again for warnings)
-        # timeout: 5 minutes max per execution
-        result = subprocess.run(
-            cmd,
-            cwd=str(repo_root),
-            env=env,
-            input="n\nn\nd\n",  # Automatic responses: no analytics, no gitignore, don't ask warnings
-            text=True,
-            capture_output=True,  # ✅ CATTURA OUTPUT per estrarre summary
-            timeout=300,  # 5 minutes timeout
-            stdout=subprocess.PIPE,  # Explicitly redirect stdout
-            stderr=subprocess.PIPE   # Explicitly redirect stderr
-        )
+        with open(log_file_path, "a", encoding="utf-8") as log_file:
+            log_file.write(f"\n--- Run Start: {datetime.now().isoformat()} ---\n")
+            
+            process = subprocess.Popen(
+                cmd,
+                cwd=str(repo_root),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                start_new_session=True 
+            )
+            
+            make_async(process.stdout.fileno())
+            
+            start_time = time.time()
+            last_output_time = start_time
+            last_heartbeat_time = start_time
+            timeout = 300
+            
+            while True:
+                current_time = time.time()
+                elapsed = current_time - start_time
+                
+                if process.poll() is not None:
+                    break
+                    
+                if elapsed > timeout:
+                    logger.error(f"Aider timed out after {timeout}s.")
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    return 124
+                
+                try:
+                    line = process.stdout.readline()
+                    if line:
+                        log_file.write(line)
+                        log_file.flush()
+                        full_output.append(line)
+                        last_output_time = current_time
+                        
+                        # Show some specific progress in console if we see it
+                        if "Applied changes to" in line or "Creating" in line:
+                            logger.info(f"[AIDER] {line.strip()}")
+                    else:
+                        # No output right now, check if we've been waiting long
+                        time_since_output = current_time - last_output_time
+                        if time_since_output > 15:
+                            if int(current_time) % 30 == 0: # Log every 30s of silence
+                                logger.info(f"Still waiting for model response... ({int(elapsed)}s elapsed)")
+                                last_output_time = current_time # Reset to avoid spamming every second
+                        
+                        time.sleep(0.5)
+                except IOError:
+                    # No data available on non-blocking pipe
+                    time.sleep(0.5)
+
+                # Explicit heartbeat every 60s
+                if current_time - last_heartbeat_time > 60:
+                    logger.info(f"Aider is active. Total time: {int(elapsed // 60)}m {int(elapsed % 60)}s")
+                    last_heartbeat_time = current_time
+
+            # Final capture
+            try:
+                final_out = process.stdout.read()
+                if final_out:
+                    log_file.write(final_out)
+                    full_output.append(final_out)
+            except:
+                pass
+
+        exit_code = process.returncode
+        complete_output = "".join(full_output)
+        summary = extract_aider_summary(complete_output)
+        logger.info(f"Aider task finished. {summary}")
         
-        # Parse output per summary
-        if result.stdout:
-            summary = extract_aider_summary(result.stdout)
-            logger.info(f"Aider completed: {summary}")
-            # Log output completo solo in verbose mode
-            verbose_mode = logger.isEnabledFor(logging.DEBUG)
-            if verbose_mode:
-                logger.debug(f"Full Aider output:\n{result.stdout}")
+        return exit_code
         
-        if result.stderr:
-            # Filtra stderr per errori rilevanti (escludi warning non critici)
-            stderr_filtered = filter_aider_stderr(result.stderr)
-            if stderr_filtered:
-                logger.warning(f"Aider stderr: {stderr_filtered[:500]}")
-        
-        return result.returncode
-    except subprocess.TimeoutExpired:
-        logger.error("Aider execution timed out after 5 minutes. This may indicate:")
-        logger.error("  - Model is taking too long to respond")
-        logger.error("  - Context is too large (check context length limits)")
-        logger.error("  - Network issues with Ollama")
-        return 124  # Standard timeout exit code
-    except FileNotFoundError:
-        logger.error("Error: 'aider' command not found. Please install it via 'pipx install aider-chat'.")
-        return 127
     except Exception as e:
-        logger.error(f"Unexpected error running Aider: {e}")
-        verbose_mode = logger.isEnabledFor(logging.DEBUG)
-        if verbose_mode:
-            logger.debug(f"Exception details: {e}", exc_info=True)
+        logger.error(f"Bridge failure: {e}")
+        if process and process.poll() is None:
+            try: os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            except: pass
         return 1

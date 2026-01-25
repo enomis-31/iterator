@@ -20,7 +20,6 @@ from typing import Dict, Tuple, List, Optional
 import json
 
 # Configure Logger
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Defaults
@@ -44,7 +43,7 @@ def create_coder_agent(model_name: str, base_url: str = None) -> Agent:
             "You analyze requests and repositories to produce clear, actionable plans for coding tools (like Aider)."
         ),
         llm=get_llm(model_name, base_url=base_url),
-        verbose=True,
+        verbose=False,
         allow_delegation=False
     )
 
@@ -57,7 +56,7 @@ def create_critic_agent(model_name: str, base_url: str = None) -> Agent:
             "You rely on evidence, not intuition. You only approve changes that are correct and safe."
         ),
         llm=get_llm(model_name, base_url=base_url),
-        verbose=True,
+        verbose=False,
         allow_delegation=False
     )
 
@@ -113,7 +112,7 @@ def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_co
         agent=coder
     )
     
-    crew = Crew(agents=[coder], tasks=[planning_task])
+    crew = Crew(agents=[coder], tasks=[planning_task], verbose=False)
     result = crew.kickoff()
     
     try:
@@ -156,7 +155,7 @@ def critic_review(diff: str, test_log: str, task_name: str, model_name: str = DE
         agent=critic
     )
     
-    crew = Crew(agents=[critic], tasks=[review_task])
+    crew = Crew(agents=[critic], tasks=[review_task], verbose=False)
     result = crew.kickoff()
     
     # Parsare risultato
