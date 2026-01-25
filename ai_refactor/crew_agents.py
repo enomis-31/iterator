@@ -16,7 +16,7 @@ logging.getLogger("litellm").setLevel(logging.ERROR)
 logging.getLogger("litellm.proxy").setLevel(logging.ERROR)
 
 from crewai import Agent, Task, Crew, LLM
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 import json
 
 # Configure Logger
@@ -73,6 +73,16 @@ def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_co
     if len(repo_files) > 200:
         files_list_str += "\n... (truncated)"
 
+    # Limit spec_context to fit within model's context limit
+    if spec_context:
+        from .context_manager import limit_context_for_model
+        spec_context = limit_context_for_model(
+            spec_context,
+            model_name,
+            reserve_tokens=3000,  # Reserve for prompt, files list, and response
+            verbose=False
+        )
+
     description = (
         f"Objective: {task_name}\n"
         f"Context: {task_context}\n"
@@ -83,10 +93,16 @@ def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_co
         
     description += (
         f"Available Files:\n{files_list_str}\n\n"
+        "IMPORTANT: If this is the first implementation, the code files may not exist yet. "
+        "You should suggest creating new files in appropriate directories (e.g., app/, lib/, src/, components/). "
+        "Analyze the repository structure and suggest where to create new files based on the specifications.\n\n"
         "Produce a JSON object with two keys:\n"
-        "1. 'aider_prompt': A detailed instruction for the coding tool to execute the refactor. "
+        "1. 'aider_prompt': A detailed instruction for the coding tool to execute the implementation. "
+        "If files don't exist, instruct to CREATE them in the appropriate directory structure. "
         "Reference specific constraints from the Specifications if applicable.\n"
-        "2. 'target_files': A list of file paths that likely need modification.\n"
+        "2. 'target_files': A list of file paths that need to be created or modified. "
+        "You can suggest NEW files that don't exist yet (e.g., 'app/components/Notification.tsx', 'lib/services/event-monitor.ts'). "
+        "Only suggest code files (not spec files).\n"
         "Do NOT output markdown code blocks, just the raw JSON string."
     )
 
@@ -115,9 +131,13 @@ def coder_plan(task_name: str, task_context: str, repo_files: List[str], spec_co
         # Fallback
         return task_name, []
 
-def critic_review(diff: str, test_log: str, task_name: str, model_name: str = DEFAULT_PLANNER_MODEL, base_url: str = None) -> str:
+def critic_review(diff: str, test_log: str, task_name: str, model_name: str = DEFAULT_PLANNER_MODEL, base_url: str = None) -> tuple[str, Optional[str]]:
     """
-    Reviews the changes and returns "SHIP" or "REVISE".
+    Reviews the changes and returns ("SHIP", None) or ("REVISE", reason).
+    
+    Returns:
+        Tuple of (decision, reason) where decision is "SHIP" or "REVISE",
+        and reason is None for SHIP or a string explaining why REVISE.
     """
     critic = create_critic_agent(model_name, base_url=base_url)
     
@@ -126,18 +146,28 @@ def critic_review(diff: str, test_log: str, task_name: str, model_name: str = DE
             f"Task: {task_name}\n\n"
             f"Test logs:\n{test_log[-2000:]}\n\n" # Truncate logs
             f"Git Diff:\n{diff[:5000]}\n\n" # Truncate diff
-            "Analyze the above. If tests passed and the code changes look correct and safe, output 'SHIP'. "
-            "If tests failed or there are logical errors, output 'REVISE'. "
-            "Output ONLY the decision word."
+            "Analyze the above. If tests passed and the code changes look correct and safe, output 'SHIP'.\n"
+            "If tests failed or there are logical errors, output 'REVISE: <one sentence reason>'.\n"
+            "Output format: 'SHIP' or 'REVISE: <reason>'.\n"
+            "Output ONLY the decision word(s)."
         ),
-        expected_output="'SHIP' or 'REVISE'",
+        expected_output="'SHIP' or 'REVISE: <reason>'",
         agent=critic
     )
     
     crew = Crew(agents=[critic], tasks=[review_task])
     result = crew.kickoff()
     
-    decision = str(result).strip().upper()
-    if "SHIP" in decision:
-        return "SHIP"
-    return "REVISE"
+    # Parsare risultato
+    result_str = str(result).strip()
+    
+    # Cerca formato "REVISE: <reason>"
+    if result_str.upper().startswith("REVISE:"):
+        decision = "REVISE"
+        reason = result_str.split(":", 1)[1].strip() if ":" in result_str else None
+        return decision, reason
+    elif "SHIP" in result_str.upper():
+        return "SHIP", None
+    else:
+        # Fallback: se non riconosciuto, assume REVISE
+        return "REVISE", f"Unrecognized response: {result_str}"

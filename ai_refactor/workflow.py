@@ -82,7 +82,8 @@ def run_once(
     prompt: Optional[str] = None,
     skip_tests: bool = False,
     verbose: bool = False,
-    story_context: Optional[str] = None
+    story_context: Optional[str] = None,
+    feature_id: Optional[str] = None
 ) -> Dict[str, Any]:
     
     # Filter non-critical LiteLLM errors (fastapi dependency warnings)
@@ -102,10 +103,20 @@ def run_once(
             "error": f"Failed to load config: {e}"
         }
     
-    # Load Spec Kit context if enabled
+    # Load Spec Kit context
+    # Se story_context è fornito, contiene già PRD context.full_concatenation (solo feature corrente)
+    # Non serve chiamare load_specs() che carica TUTTE le feature
     spec_context = ""
-    try:
-        if config.spec_kit and config.spec_kit.get("enabled", False):
+    if story_context:
+        # story_context già contiene PRD context.full_concatenation + story details
+        # Usare direttamente senza aggiungere altro context per evitare confusione
+        spec_context = story_context
+        if verbose:
+            logger.debug(f"Using PRD context from story_context (length: {len(spec_context)} characters)")
+    elif config.spec_kit and config.spec_kit.get("enabled", False):
+        # Fallback: se non c'è story_context, carica specs
+        # Nota: questo carica TUTTE le feature, quindi preferire sempre story_context
+        try:
             specs_dir = config.spec_kit.get("specs_dir", "specs")
             logger.info(f"Loading Spec Kit data from {specs_dir}...")
             spec_context = load_specs(repo_root, specs_dir)
@@ -113,17 +124,11 @@ def run_once(
                 logger.info("Spec Kit context loaded.")
                 if verbose:
                     logger.debug(f"Spec context length: {len(spec_context)} characters")
-    except Exception as e:
-        logger.warning(f"Failed to load Spec Kit context: {e}")
-        if verbose:
-            logger.debug(f"Exception details: {e}", exc_info=True)
-        spec_context = ""
-    
-    # Enhance spec context with story context if provided
-    if story_context:
-        spec_context = enhance_spec_context_with_story(spec_context, story_context)
-        if verbose:
-            logger.debug(f"Enhanced context with story context (total length: {len(spec_context)} characters)")
+        except Exception as e:
+            logger.warning(f"Failed to load Spec Kit context: {e}")
+            if verbose:
+                logger.debug(f"Exception details: {e}", exc_info=True)
+            spec_context = ""
     
     # 1. Plan (CrewAI) -> Prompt & Files
     aider_prompt = prompt
@@ -135,6 +140,43 @@ def run_once(
             # In a real scenario, we might read some file structure or use 'ls' but for now we pass a list of files
             # A simple recursive glob for context
             all_files = [str(f.relative_to(repo_root)) for f in repo_root.rglob("*") if f.is_file() and not any(part.startswith('.') for part in f.parts)]
+            
+            # Estrai feature_id se non fornito esplicitamente
+            if not feature_id and story_context:
+                # Cerca feature_id nel story_context (dalla PRD)
+                import re
+                match = re.search(r'feature_id["\']?\s*:\s*["\']?([^"\']+)', story_context)
+                if match:
+                    feature_id = match.group(1)
+            
+            # Se ancora non abbiamo feature_id, prova a estrarlo da task_name (formato: {feature_id}-{story_id}-{title})
+            if not feature_id and task_name:
+                import re
+                match = re.match(r'^([0-9]{3}-[a-z0-9-]+)', task_name)
+                if match:
+                    feature_id = match.group(1)
+            
+            # Filtra all_files per feature corrente
+            if feature_id:
+                # Escludi altre feature directories da specs/, include solo feature corrente + file di codice
+                filtered_files = []
+                for f in all_files:
+                    # Include file di codice (app/, lib/, src/, components/, etc.)
+                    if any(f.startswith(prefix) for prefix in ["app/", "lib/", "src/", "components/", "pages/", "routes/"]):
+                        filtered_files.append(f)
+                    # Include file della feature corrente in specs/
+                    elif f.startswith(f"specs/{feature_id}/"):
+                        filtered_files.append(f)
+                    # Escludi altre feature directories
+                    elif f.startswith("specs/") and not f.startswith(f"specs/{feature_id}/"):
+                        continue  # Escludi altre feature
+                    # Include altri file non-spec (README, config, etc.)
+                    elif not f.startswith("specs/"):
+                        filtered_files.append(f)
+                
+                all_files = filtered_files
+                if verbose:
+                    logger.debug(f"Filtered files for feature {feature_id}: {len(all_files)} files (excluded other feature directories)")
             
             # Check presets
             if task_name in config.task_presets:
@@ -152,7 +194,54 @@ def run_once(
                 logger.info(f"Plan generated: prompt length={len(aider_prompt)}, target files={len(target_files)}")
                 if verbose:
                     logger.debug(f"Generated prompt: {aider_prompt[:200]}...")
-                    logger.debug(f"Target files: {target_files}")
+                    logger.debug(f"Target files (before validation): {target_files}")
+                
+                # Validare target_files: escludi file di spec, include solo codice
+                # IMPORTANTE: Accettiamo anche file che NON esistono ancora (per creazione iniziale)
+                code_extensions = {'.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.go', '.rs', '.cpp', '.c', '.h', '.hpp'}
+                target_files_filtered = []
+                spec_files_filtered = []
+                
+                for f in target_files:
+                    # Escludi file di spec
+                    if f.startswith('specs/'):
+                        spec_files_filtered.append(f)
+                        continue
+                    
+                    # Accetta solo file con estensioni di codice (anche se non esistono ancora)
+                    if any(f.endswith(ext) for ext in code_extensions):
+                        target_files_filtered.append(f)
+                    else:
+                        spec_files_filtered.append(f)
+                
+                if spec_files_filtered:
+                    logger.warning(f"Filtered out {len(spec_files_filtered)} spec/non-code files: {spec_files_filtered[:3]}")
+                
+                # Verifica se i file suggeriti esistono o devono essere creati
+                existing_files = []
+                new_files = []
+                for f in target_files_filtered:
+                    file_path = repo_root / f
+                    if file_path.exists():
+                        existing_files.append(f)
+                    else:
+                        new_files.append(f)
+                
+                if new_files:
+                    logger.info(f"Planner suggested {len(new_files)} new files to create: {', '.join(new_files[:3])}{'...' if len(new_files) > 3 else ''}")
+                if existing_files:
+                    logger.info(f"Planner suggested {len(existing_files)} existing files to modify: {', '.join(existing_files[:3])}{'...' if len(existing_files) > 3 else ''}")
+                
+                target_files = target_files_filtered
+                if verbose:
+                    logger.debug(f"Target files (after validation): {target_files}")
+                
+                # Se non ci sono file di codice suggeriti, avvisa ma non blocca (potrebbe essere creazione iniziale)
+                if not target_files:
+                    logger.warning("No code files suggested by Planner. This might be the first implementation.")
+                    logger.warning("Planner should suggest creating new files in app/, lib/, src/, or components/ directories.")
+                    # Non blocchiamo - lasciamo che Aider provi con il prompt generico
+                    # Il Planner potrebbe aver suggerito di creare file nel prompt invece che in target_files
         except Exception as e:
             logger.warning(f"Failed to generate plan with agent: {e}")
             if verbose:
@@ -162,20 +251,39 @@ def run_once(
     
     if not aider_prompt:
         aider_prompt = task_name # Fallback if agent failed or no prompt provided
-        
+    
     # 2. Code (Aider)
+    # Nota: Aider può creare nuovi file anche se target_files è vuoto o contiene file non esistenti
+    # Il prompt dovrebbe contenere istruzioni su quali file creare
     log_phase("CODE", verbose)
     logger.info(f"Starting Aider with prompt: {aider_prompt[:100]}..." if len(aider_prompt) > 100 else f"Starting Aider with prompt: {aider_prompt}")
+    if target_files:
+        # Verifica quali file esistono e quali devono essere creati
+        existing = [f for f in target_files if (repo_root / f).exists()]
+        new = [f for f in target_files if not (repo_root / f).exists()]
+        if existing:
+            logger.info(f"Target files to modify ({len(existing)}): {', '.join(existing[:3])}{'...' if len(existing) > 3 else ''}")
+        if new:
+            logger.info(f"Target files to create ({len(new)}): {', '.join(new[:3])}{'...' if len(new) > 3 else ''}")
+    else:
+        logger.info("No specific target files - Aider will create files based on prompt instructions")
+    
     try:
         coder_model = config.models.get("coder", "ollama/qwen2.5-coder:14b")
         if verbose:
-            logger.debug(f"Using coder model: {coder_model}, target files: {target_files}")
+            logger.debug(f"Using coder model: {coder_model}")
         aider_exit_code = run_aider(aider_prompt, repo_root, target_files, 
                   model=coder_model, ollama_base_url=config.ollama_base_url)
         
-        # Log Aider result
+        # Log Aider result (il summary è già loggato in run_aider)
         if aider_exit_code == 0:
-            logger.info("Aider completed successfully")
+            logger.info("Aider execution completed")
+        elif aider_exit_code == 124:
+            return {
+                "decision": "ERROR",
+                "tests_ok": False,
+                "error": "Aider execution timed out after 5 minutes. Check model response time or context length."
+            }
         else:
             logger.warning(f"Aider exited with code {aider_exit_code}")
         
@@ -239,6 +347,7 @@ def run_once(
         return {"decision": "NO_CHANGES", "tests_ok": tests_ok}
     
     decision = "SHIP"
+    critic_reason = None
     if use_agents:
         log_phase("REVIEW", verbose)
         try:
@@ -246,8 +355,10 @@ def run_once(
             planner_model = config.models.get("planner", "ollama/llama3.1:8b")
             if verbose:
                 logger.debug(f"Using planner model: {planner_model}")
-            decision = critic_review(diff, test_log, task_name, planner_model, base_url=config.ollama_base_url)
+            decision, critic_reason = critic_review(diff, test_log, task_name, planner_model, base_url=config.ollama_base_url)
             logger.info(f"Review decision: {decision}")
+            if critic_reason:
+                logger.info(f"Review reason: {critic_reason}")
             if verbose:
                 logger.debug(f"Diff size: {len(diff)} characters")
         except Exception as e:
@@ -256,12 +367,23 @@ def run_once(
                 logger.debug(f"Exception details: {e}", exc_info=True)
             logger.info("Defaulting to SHIP decision.")
             decision = "SHIP"
+            critic_reason = None
+    
+    # Loggare perché non si fa commit
+    if decision == "SHIP" and tests_ok:
+        if auto_commit:
+            logger.info("Auto-committing changes (SHIP + tests passed)...")
+        else:
+            logger.info("Changes ready to commit (SHIP + tests passed, but --auto-commit not set)")
+    elif decision != "SHIP":
+        logger.info(f"Not committing: Review decision is '{decision}'" + (f" ({critic_reason})" if critic_reason else ""))
+    elif not tests_ok:
+        logger.info("Not committing: Tests failed")
     
     # 5. Commit/Push
     if decision == "SHIP" and tests_ok:
         if auto_commit:
             try:
-                logger.info("Auto-committing changes...")
                 commit_changes(repo_root, f"refactor: {task_name}")
                 if verbose:
                     logger.debug("Changes committed successfully")
@@ -280,5 +402,6 @@ def run_once(
         "tests_ok": tests_ok,
         "decision": decision,
         "diff_size": len(diff),
-        "test_log_head": test_log[:500] if test_log else ""
+        "test_log_head": test_log[:500] if test_log else "",
+        "critic_reason": critic_reason
     }

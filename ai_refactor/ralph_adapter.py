@@ -156,25 +156,24 @@ def select_next_story(
     
     return selected
 
-def build_story_context(story: Dict[str, Any], prd: Dict[str, Any]) -> str:
+def build_story_context(story: Dict[str, Any], prd: Dict[str, Any], model_name: Optional[str] = None, verbose: bool = False) -> str:
     """
     Constructs rich context string from story + PRD context.
     Combines story description, acceptance_criteria, independent_test
     and prepends PRD context.full_concatenation for full spec context.
     
-    Returns formatted context string for agents.
+    Args:
+        story: Story dictionary from PRD
+        prd: Full PRD dictionary
+        model_name: Model name for context limiting (optional)
+        verbose: Whether to log context details
+    
+    Returns:
+        Formatted context string for agents (limited to model's context length if model_name provided)
     """
     context_parts = []
     
-    # Add PRD full context first (all spec files)
-    prd_context = prd.get("context", {})
-    full_concatenation = prd_context.get("full_concatenation", "")
-    if full_concatenation:
-        context_parts.append("=== FULL SPECIFICATION CONTEXT ===\n")
-        context_parts.append(full_concatenation)
-        context_parts.append("\n")
-    
-    # Add story-specific context
+    # Add story-specific context FIRST (most important)
     context_parts.append("=== CURRENT USER STORY ===\n")
     context_parts.append(f"Story ID: {story.get('id', 'N/A')}\n")
     context_parts.append(f"Title: {story.get('title', 'N/A')}\n")
@@ -200,7 +199,27 @@ def build_story_context(story: Dict[str, Any], prd: Dict[str, Any]) -> str:
     else:
         context_parts.append("\n(No linked tasks - story context only)\n")
     
-    return "".join(context_parts)
+    # Add PRD full context AFTER story (less critical, can be truncated)
+    prd_context = prd.get("context", {})
+    full_concatenation = prd_context.get("full_concatenation", "")
+    if full_concatenation:
+        context_parts.append("\n=== FULL SPECIFICATION CONTEXT ===\n")
+        context_parts.append(full_concatenation)
+        context_parts.append("\n")
+    
+    full_context = "".join(context_parts)
+    
+    # Limit context if model_name provided
+    if model_name:
+        from .context_manager import limit_context_for_model
+        full_context = limit_context_for_model(
+            full_context,
+            model_name,
+            reserve_tokens=2000,  # Reserve for prompt + response
+            verbose=verbose
+        )
+    
+    return full_context
 
 def update_story_after_attempt(
     story: Dict[str, Any],
@@ -226,7 +245,12 @@ def update_story_after_attempt(
         error_msg = result.get("error")
         if not error_msg:
             if result.get("decision") != "SHIP":
-                error_msg = f"Agent decision: {result.get('decision', 'UNKNOWN')}"
+                decision = result.get("decision", "UNKNOWN")
+                critic_reason = result.get("critic_reason")
+                if critic_reason:
+                    error_msg = f"Agent decision: {decision} - {critic_reason}"
+                else:
+                    error_msg = f"Agent decision: {decision}"
             elif not result.get("tests_ok", True):
                 error_msg = "Tests failed"
             else:
@@ -311,8 +335,16 @@ def run_ralph_iteration(
     _save_prd(prd_path, prd)
     logger.info(f"Story {story_id} marked as in_progress (attempt {story['attempts']})")
     
-    # Build story context
-    story_context = build_story_context(story, prd)
+    # Build story context (with model-aware limiting)
+    # Get model name from config for context limiting
+    try:
+        from .config import load_config
+        config = load_config(repo_root)
+        coder_model = config.models.get("coder", "ollama/qwen2.5-coder:14b")
+    except Exception:
+        coder_model = None
+    
+    story_context = build_story_context(story, prd, model_name=coder_model, verbose=verbose)
     
     # Check if story has no linked tasks (informational)
     tasks = story.get("tasks", [])
@@ -339,6 +371,7 @@ def run_ralph_iteration(
             skip_tests=skip_tests,
             verbose=verbose,
             story_context=story_context,  # Pass story context
+            feature_id=feature_id,  # Pass feature_id for filtering
         )
     except Exception as e:
         logger.error(f"Exception during run_once for story {story_id}: {e}", exc_info=verbose)
